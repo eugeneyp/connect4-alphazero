@@ -548,7 +548,7 @@ Build in this exact order. **Each iteration must have passing tests before proce
 
 ---
 
-### Iteration 0: Project Scaffolding (2-3 hours)
+### Iteration 0: Project Scaffolding ✅ COMPLETE
 
 **Goal:** Repository structure, dependencies, configuration system.
 
@@ -608,7 +608,7 @@ Build in this exact order. **Each iteration must have passing tests before proce
 
 ---
 
-### Iteration 1: Game Engine (3-4 hours)
+### Iteration 1: Game Engine ✅ COMPLETE
 
 **Goal:** Rock-solid Connect 4 engine with bitboard representation.
 
@@ -655,7 +655,7 @@ test_hash_differs_for_different_boards
 
 ---
 
-### Iteration 2: Neural Network (2-3 hours)
+### Iteration 2: Neural Network ✅ COMPLETE
 
 **Goal:** ResNet with dual heads, verified forward/backward pass.
 
@@ -685,7 +685,7 @@ test_model_parameter_count_approximately_correct (within 10% of expected)
 
 ---
 
-### Iteration 3: MCTS (4-5 hours)
+### Iteration 3: MCTS ✅ COMPLETE
 
 **Goal:** Working MCTS with neural network integration.
 
@@ -712,7 +712,7 @@ test_mcts_with_random_network_does_not_crash (integration test)
 
 ---
 
-### Iteration 4: Self-Play + Training Loop — FIRST END-TO-END (4-5 hours)
+### Iteration 4: Self-Play + Training Loop ✅ COMPLETE
 
 **Goal:** Complete training pipeline producing v0.1 baseline. Even undertrained, this proves the full system works.
 
@@ -758,7 +758,7 @@ test_full_tiny_training_beats_random (integration test: 2 iterations then evalua
 
 ---
 
-### Iteration 5: Benchmarking Framework (2-3 hours)
+### Iteration 5: Benchmarking Framework ✅ COMPLETE
 
 **Goal:** Systematic evaluation infrastructure.
 
@@ -795,34 +795,55 @@ test_evaluate_script_produces_results (integration)
 
 ---
 
-### Iteration 6: Training at Scale (6-8 hours, mostly GPU waiting)
+### Iteration 6: Training at Scale 🔄 IN PROGRESS (infrastructure done, training pending)
 
 **Goal:** Full training run producing a competitive agent.
 
-**Deliverables:**
-- Full config: 5 blocks, 128 filters, 5000 games/iter, 600 MCTS sims
-- 15-25 iterations on cloud GPU
+**Done:**
+- `configs/cloud.yaml` — practical Colab config (5b/128f, 300 sims, 2000 games/iter)
+- `notebooks/analysis.ipynb` — training visualization (loss curves, arena win rate, value head diagnostic)
+- `COLAB_TRAINING.md` — step-by-step guide for running training on Google Colab
+
+**Pending (requires cloud GPU run):**
+- 15-25 iterations on cloud GPU using `configs/cloud.yaml` (Colab T4) or `configs/full.yaml` (Vast.ai)
 - Training logs with loss curves and arena results
-- Best model checkpoint
-- Training visualization notebook
+- Best model checkpoint (`checkpoints/best_model.pt`)
+
+**Speed note:** `full.yaml` (600 sims × 5000 games) is too slow for free Colab (~10-15h/iter).
+Use `cloud.yaml` on Colab (~2-4h/iter) or `full.yaml` on Vast.ai RTX 3090 (~2-4h/iter).
 
 **Monitoring signals:**
 - Policy loss and value loss should both decrease steadily
 - Arena win rate >55% for accepted iterations
 - Self-play first-player win rate 50-55% (balanced = good)
-- If value predictions cluster near 0 → value head collapse → restart with different lr
+- If value predictions cluster near 0 → value head collapse → restart with `learning_rate: 5.0e-4`
+
+**Run training:**
+```bash
+# Colab: see COLAB_TRAINING.md for full setup (Drive symlink for persistence)
+python scripts/train.py --config configs/cloud.yaml
+
+# Vast.ai (full scale):
+python scripts/train.py --config configs/full.yaml
+
+# Resume after disconnect:
+python scripts/train.py --config configs/cloud.yaml --resume checkpoints/checkpoint_iter_NNN.pt
+```
 
 ---
 
-### Iteration 7: ONNX Export + Kaggle (3-4 hours)
+### Iteration 7: ONNX Export + Kaggle 🔄 IN PROGRESS (pulled forward; export done, submission failing)
 
 **Goal:** Deployed model on Kaggle.
 
-**Deliverables:**
-- ONNX export + dynamic quantization (see Section 11)
-- Self-contained Kaggle agent file (see Section 11)
-- Local testing with `kaggle-environments`
-- First Kaggle submission
+**Done:**
+- `src/export/onnx_export.py` — ONNX export pipeline
+- `src/export/kaggle_agent.py` — self-contained inline-MCTS Kaggle agent
+- `scripts/export_onnx.py`, `scripts/kaggle_submit.py`, `scripts/benchmark_mcts.py`
+
+**Pending:**
+- Fix failing Kaggle submission (submission packaged but failing on Kaggle side)
+- First successful scored submission
 
 ---
 
