@@ -4,8 +4,9 @@ import pytest
 import torch
 
 from src.game.board import Connect4Board
+from src.mcts.search import MCTS
 from src.neural_net.model import Connect4Net
-from src.utils.config import ModelConfig
+from src.utils.config import MCTSConfig, ModelConfig
 
 
 @pytest.fixture
@@ -75,3 +76,27 @@ def empty_board_tensor(empty_board: Connect4Board) -> torch.Tensor:
     """Return the encoding of an empty board as a (1, 3, 6, 7) tensor."""
     # Convert via tolist() because this PyTorch build has no NumPy C bridge.
     return torch.tensor(empty_board.encode().tolist(), dtype=torch.float32).unsqueeze(0)
+
+
+@pytest.fixture
+def fast_mcts_config() -> MCTSConfig:
+    """Return a fast MCTSConfig with 50 simulations for unit tests."""
+    return MCTSConfig(num_simulations=50, c_puct=2.0)
+
+
+@pytest.fixture
+def mcts_factory(tiny_model: Connect4Net):
+    """Return a factory that builds MCTS instances with the tiny model."""
+
+    def _make(config: MCTSConfig | None = None) -> MCTS:
+        if config is None:
+            config = MCTSConfig(num_simulations=50, c_puct=2.0)
+        return MCTS(model=tiny_model, config=config)
+
+    return _make
+
+
+@pytest.fixture
+def tactical_mcts(tiny_model: Connect4Net) -> MCTS:
+    """Return an MCTS with 200 simulations — enough to reliably find forced wins."""
+    return MCTS(model=tiny_model, config=MCTSConfig(num_simulations=200, c_puct=2.0))
