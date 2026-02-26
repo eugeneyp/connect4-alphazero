@@ -260,15 +260,17 @@ class MCTSNode:
         action: The move (column 0-6) that led to this node
         prior: P(s,a) from neural network policy
         visit_count: N(s,a) — times this node was visited
-        value_sum: W(s,a) — total value accumulated
+        value_sum: W(s,a) — total value accumulated (from this node's current player's perspective)
         children: dict mapping action (int) → MCTSNode
         board: Connect4Board at this position
-        is_expanded: bool — whether children have been created
+        is_leaf: bool property — True when children dict is empty (unexpanded)
+        is_terminal: bool property — True when board.is_terminal()
     """
 
     @property
     def q_value(self) -> float:
-        """Q(s,a) = W(s,a) / N(s,a). Return 0.0 if unvisited."""
+        """W(s,a) / N(s,a). Stored from THIS NODE's current player's perspective.
+        Returns 0.0 if unvisited."""
 ```
 
 ### PUCT Selection
@@ -277,9 +279,13 @@ class MCTSNode:
 def _puct_score(self, parent: MCTSNode, child: MCTSNode) -> float:
     """
     UCB = Q(s,a) + c_puct * P(s,a) * sqrt(N_parent) / (1 + N(s,a))
+
+    IMPORTANT sign convention: child.q_value is from the CHILD's player's perspective,
+    but PUCT selects from the PARENT's player's perspective (the opposite sign in a
+    zero-sum game). Therefore the formula negates child.q_value:
     """
     exploration = self.c_puct * child.prior * math.sqrt(parent.visit_count) / (1 + child.visit_count)
-    return child.q_value + exploration
+    return -child.q_value + exploration  # negate: child's perspective → parent's perspective
 ```
 
 ### Dirichlet Noise (Root Only)
@@ -321,11 +327,14 @@ def select_move(visit_counts: np.ndarray, temperature: float) -> int:
 ### Value Backpropagation
 
 **Critical: flip the sign at each level.** When backing up value v from a leaf:
-- The leaf's parent gets -v (opponent's perspective)
+- The leaf gets +v (leaf's own current player's perspective)
+- The leaf's parent gets -v (parent's player is the opponent)
 - The grandparent gets +v
 - And so on up to root
 
-Getting this wrong produces an agent that plays to lose.
+This means `node.value_sum` always accumulates from that node's **own current player's perspective**. When PUCT at the parent evaluates a child, it must negate: `Q(s,a) = -child.q_value` (see PUCT formula above).
+
+Getting the backup direction wrong produces an agent that plays to lose. Getting the PUCT negation wrong also produces an agent that plays to lose (it will treat winning moves as bad).
 
 ---
 
