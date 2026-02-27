@@ -48,19 +48,26 @@ Replace `YOUR_USERNAME` with your GitHub username.
 
 ## Step 4 — Symlink Checkpoints to Google Drive
 
-This is the key step that makes training survive session disconnects:
+This is the key step that makes training survive session disconnects.
+Use `os.symlink` with explicit absolute paths (avoids shell CWD issues):
 
 ```python
 import os
 
-# Create checkpoint folder on Drive
-os.makedirs('/content/drive/MyDrive/connect4-checkpoints', exist_ok=True)
+DRIVE_CKPT = '/content/drive/MyDrive/connect4-checkpoints'
+REPO_CKPT  = '/content/connect4-alphazero/checkpoints'
 
-# Symlink so the training script writes directly to Drive
-!ln -sf /content/drive/MyDrive/connect4-checkpoints checkpoints
+# Create checkpoint folder on Drive
+os.makedirs(DRIVE_CKPT, exist_ok=True)
+
+# Symlink: repo's checkpoints/ → Drive folder
+# (only if the symlink doesn't already exist from a previous session)
+if not os.path.exists(REPO_CKPT):
+    os.symlink(DRIVE_CKPT, REPO_CKPT)
 
 # Verify
-!ls -la checkpoints
+print(os.path.islink(REPO_CKPT), '->', os.readlink(REPO_CKPT))
+!ls /content/drive/MyDrive/connect4-checkpoints
 ```
 
 From now on, every checkpoint saved by the training script goes straight to your Google Drive.
@@ -96,12 +103,16 @@ When the session disconnects, re-run cells 1 (mount Drive) through 4 (symlink), 
 ```python
 import os
 
-# Find the latest checkpoint
-checkpoints = sorted([f for f in os.listdir('checkpoints') if f.startswith('checkpoint_iter_')])
-latest = checkpoints[-1]
+DRIVE_CKPT = '/content/drive/MyDrive/connect4-checkpoints'
+
+# Find the latest checkpoint on Drive
+checkpoints = sorted([f for f in os.listdir(DRIVE_CKPT) if f.startswith('checkpoint_iter_')])
+latest = os.path.join(DRIVE_CKPT, checkpoints[-1])
 print(f"Resuming from: {latest}")
 
-!python scripts/train.py --config configs/cloud.yaml --resume checkpoints/{latest} 2>&1 | tee -a /content/drive/MyDrive/connect4-training.log
+!python /content/connect4-alphazero/scripts/train.py \
+  --config /content/connect4-alphazero/configs/cloud.yaml \
+  --resume {latest} 2>&1 | tee -a /content/drive/MyDrive/connect4-training.log
 ```
 
 The `-a` flag appends to the existing log file rather than overwriting it.
