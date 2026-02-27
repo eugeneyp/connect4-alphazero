@@ -16,12 +16,17 @@ from pathlib import Path
 
 import torch
 
+from src.agents.minimax_agent import MinimaxAgent
+from src.agents.random_agent import RandomAgent
+from src.game.board import Connect4Board
+from src.game.constants import PLAYER_1, PLAYER_2
+from src.mcts.search import MCTS, select_move
 from src.neural_net.model import Connect4Net
 from src.training.arena import pit
 from src.training.replay_buffer import ReplayBuffer
 from src.training.self_play import SelfPlay
 from src.training.trainer import Trainer
-from src.utils.config import Config
+from src.utils.config import Config, MCTSConfig
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +159,64 @@ class Coach:
             )
             self._save_checkpoint(model, trainer.optimizer, iter_checkpoint_path, iteration)
             logger.info("Saved checkpoint: %s", iter_checkpoint_path)
+
+            # ----------------------------------------------------------------
+            # 5. Quick benchmark: current best vs random and minimax(d=1)
+            # ----------------------------------------------------------------
+            self._log_benchmark(model)
+
+    def _log_benchmark(self, model: Connect4Net, num_games: int = 40) -> None:
+        """Run a quick benchmark of the current model vs random and minimax(d=1).
+
+        Plays num_games against each opponent (half as P1, half as P2) and
+        logs win rates. Uses only 50 MCTS simulations for speed.
+
+        Args:
+            model: The current best model to benchmark.
+            num_games: Games per opponent (default 40 — fast but informative).
+        """
+        bench_config = MCTSConfig(num_simulations=50)
+        mcts = MCTS(model, bench_config)
+        half = num_games // 2
+
+        opponents = [
+            ("Random", RandomAgent()),
+            ("Minimax(d=1)", MinimaxAgent(max_depth=1)),
+        ]
+
+        for opp_name, opp in opponents:
+            wins = losses = draws = 0
+
+            for p1_is_az in [True, False]:
+                count = half if p1_is_az else (num_games - half)
+                for _ in range(count):
+                    board = Connect4Board()
+                    while not board.is_terminal():
+                        if board.current_player == PLAYER_1:
+                            if p1_is_az:
+                                col = select_move(mcts.search(board, add_dirichlet_noise=False), 0.1)
+                            else:
+                                col = opp.select_move(board)
+                        else:
+                            if p1_is_az:
+                                col = opp.select_move(board)
+                            else:
+                                col = select_move(mcts.search(board, add_dirichlet_noise=False), 0.1)
+                        board = board.make_move(col)
+
+                    winner = board.get_winner()
+                    az_player = PLAYER_1 if p1_is_az else PLAYER_2
+                    if winner == az_player:
+                        wins += 1
+                    elif winner is None:
+                        draws += 1
+                    else:
+                        losses += 1
+
+            logger.info(
+                "Benchmark vs %s: %d/%d wins, %d draws, %d losses (%.0f%% win rate)",
+                opp_name, wins, num_games, draws, losses, 100 * wins / num_games,
+            )
 
     def _save_checkpoint(
         self,
