@@ -802,7 +802,7 @@ test_evaluate_script_produces_results (integration)
 **Done:**
 - `configs/cloud.yaml` — practical Colab config (5b/128f, 300 sims, 2000 games/iter)
 - `notebooks/analysis.ipynb` — training visualization (loss curves, arena win rate, value head diagnostic)
-- `COLAB_TRAINING.md` — step-by-step guide for running training on Google Colab
+- `CLOUD_TRAINING.md` — step-by-step guide for running training on Google Colab
 
 **Pending (requires cloud GPU run):**
 - 15-25 iterations on cloud GPU using `configs/cloud.yaml` (Colab T4) or `configs/full.yaml` (Vast.ai)
@@ -820,7 +820,7 @@ Use `cloud.yaml` on Colab (~2-4h/iter) or `full.yaml` on Vast.ai RTX 3090 (~2-4h
 
 **Run training:**
 ```bash
-# Colab: see COLAB_TRAINING.md for full setup (Drive symlink for persistence)
+# Colab: see CLOUD_TRAINING.md for full setup (Drive symlink for persistence)
 python scripts/train.py --config configs/cloud.yaml
 
 # Vast.ai (full scale):
@@ -832,18 +832,17 @@ python scripts/train.py --config configs/cloud.yaml --resume checkpoints/checkpo
 
 ---
 
-### Iteration 7: ONNX Export + Kaggle 🔄 IN PROGRESS (pulled forward; export done, submission failing)
+### Iteration 7: ONNX Export + Kaggle ✅ COMPLETE
 
 **Goal:** Deployed model on Kaggle.
 
 **Done:**
-- `src/export/onnx_export.py` — ONNX export pipeline
-- `src/export/kaggle_agent.py` — self-contained inline-MCTS Kaggle agent
+- `src/export/onnx_export.py` — ONNX export pipeline (PyTorch → ONNX)
+- `src/export/kaggle_agent.py` — onnxruntime-based agent (local testing only; onnxruntime not available in Connect-X sandbox)
+- `src/export/kaggle_agent_numpy.py` — pure numpy ResNet + MCTS agent (zero external deps; used in actual Kaggle submission)
 - `scripts/export_onnx.py`, `scripts/kaggle_submit.py`, `scripts/benchmark_mcts.py`
-
-**Pending:**
-- Fix failing Kaggle submission (submission packaged but failing on Kaggle side)
-- First successful scored submission
+- `notebooks/kaggle_local_test.ipynb` — local simulation via kaggle-environments==0.1.6
+- First successful scored submission via `--tar` mode
 
 ---
 
