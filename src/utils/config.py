@@ -49,6 +49,7 @@ class TrainingConfig:
     weight_decay: float = 1e-4
     replay_buffer_max_size: int = 1_000_000
     arena_num_games: int = 128
+    arena_num_simulations: int | None = None  # if None, uses mcts.num_simulations
     update_threshold: float = 0.55
     checkpoint_dir: str = "checkpoints"
 

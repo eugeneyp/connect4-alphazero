@@ -111,11 +111,18 @@ class Coach:
 
             if self._best_checkpoint_path.exists():
                 best = self._load_best_model(self._best_checkpoint_path)
+                arena_mcts = self._config.mcts
+                if cfg.arena_num_simulations is not None:
+                    import dataclasses
+                    arena_mcts = dataclasses.replace(
+                        self._config.mcts, num_simulations=cfg.arena_num_simulations
+                    )
                 logger.info(
-                    "Arena: %d games (candidate vs. best)...", cfg.arena_num_games
+                    "Arena: %d games (candidate vs. best, %d sims)...",
+                    cfg.arena_num_games, arena_mcts.num_simulations,
                 )
                 wins, losses, draws = pit(
-                    candidate, best, cfg.arena_num_games, self._config.mcts
+                    candidate, best, cfg.arena_num_games, arena_mcts
                 )
                 total = wins + losses + draws
                 win_rate = wins / total if total > 0 else 0.0
