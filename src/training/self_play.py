@@ -5,7 +5,11 @@ Uses MCTS guided by the neural network to play full games and collect
 is applied to double the dataset for free.
 """
 
+import logging
+import time
+
 import numpy as np
+from tqdm import tqdm
 
 from src.game.board import Connect4Board
 from src.game.constants import COLS
@@ -98,7 +102,26 @@ class SelfPlay:
         Returns:
             Flat list of TrainingSample objects from all games.
         """
+        logger = logging.getLogger(__name__)
         all_samples: list[TrainingSample] = []
-        for _ in range(n):
-            all_samples.extend(self.play_game())
+        start = time.time()
+
+        with tqdm(total=n, unit="game", desc="Self-play") as pbar:
+            for i in range(n):
+                all_samples.extend(self.play_game())
+                pbar.update(1)
+                if (i + 1) % 50 == 0:
+                    elapsed = time.time() - start
+                    rate = (i + 1) / elapsed
+                    remaining = (n - i - 1) / rate if rate > 0 else 0
+                    logger.info(
+                        "Self-play: %d/%d games  %.2f games/min  ETA %.0f min",
+                        i + 1, n, rate * 60, remaining / 60,
+                    )
+
+        elapsed = time.time() - start
+        logger.info(
+            "Self-play done: %d games in %.1f min (%.2f games/min)",
+            n, elapsed / 60, n / elapsed * 60,
+        )
         return all_samples
