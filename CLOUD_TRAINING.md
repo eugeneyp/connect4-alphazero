@@ -2,11 +2,12 @@
 
 Training on cloud GPU. Choose your platform:
 
-| Platform | GPU | Free hours | Disconnects? | Best for |
+| Platform | GPU | Cost | Session limit | Best for |
 |---|---|---|---|---|
-| **Kaggle** | P100 | 30h/week | No (Save & Run All) | Recommended |
-| **Colab** | T4 | ~12h/session | Yes | Quick tests |
-| **Vast.ai** | RTX 3090+ | Paid (~$0.20/hr) | No (tmux) | Full production run |
+| **Kaggle** | P100 | Free (30h/week) | ~9h/run | Recommended for free runs |
+| **GCP** | T4 / V100 / A100 | ~$0.35–$3/hr | No limit | Best with $400 trial credit |
+| **Colab** | T4 | Free (~12h/session) | ~12h | Quick tests |
+| **Vast.ai** | RTX 3090+ | ~$0.20/hr | No limit | Cheapest paid option |
 
 ---
 
@@ -144,7 +145,87 @@ Or download directly from [drive.google.com](https://drive.google.com) → `conn
 
 ---
 
-## Option C — Vast.ai (Paid, Full Production Run)
+## Option C — GCP (Best Use of $400 Trial Credit)
+
+GCP Compute Engine with a **Deep Learning VM** image (PyTorch + CUDA pre-installed, no setup needed). No session time limit — runs until you stop it or the VM is deleted.
+
+### Recommended Instance
+
+| Use case | Machine type | GPU | Cost/hr |
+|---|---|---|---|
+| `medium.yaml` (10 iters) | `n1-standard-8` | 1× T4 | ~$0.35 |
+| `full.yaml` (25 iters) | `n1-standard-8` | 1× V100 | ~$1.10 |
+| Fast full run | `n1-standard-16` | 1× A100 | ~$2.93 |
+
+With $400 credit: a T4 instance runs for **1000+ hours**. A V100 runs for **360+ hours**. Either is more than enough.
+
+### Create the VM
+
+```bash
+# Install gcloud CLI if needed: https://cloud.google.com/sdk/docs/install
+# Then authenticate:
+gcloud auth login
+gcloud config set project YOUR_PROJECT_ID
+
+# Create a Deep Learning VM with T4 GPU (PyTorch pre-installed)
+gcloud compute instances create connect4-training \
+  --zone=us-central1-a \
+  --machine-type=n1-standard-8 \
+  --accelerator=type=nvidia-tesla-t4,count=1 \
+  --image-family=pytorch-latest-gpu \
+  --image-project=deeplearning-platform-release \
+  --maintenance-policy=TERMINATE \
+  --boot-disk-size=50GB \
+  --metadata="install-nvidia-driver=True"
+```
+
+For V100 instead, replace `nvidia-tesla-t4` with `nvidia-tesla-v100`.
+
+### SSH and Run Training
+
+```bash
+# SSH in (gcloud handles key management automatically)
+gcloud compute ssh connect4-training --zone=us-central1-a
+
+# On the VM:
+git clone https://github.com/eugenep/connect4-alphazero.git
+cd connect4-alphazero
+pip install -e . -q
+mkdir -p logs
+
+# Run in tmux (survives SSH disconnect)
+tmux new -s train
+python scripts/train.py --config configs/full.yaml 2>&1 | tee logs/training.log
+# Ctrl+B then D to detach; tmux attach -t train to reattach
+```
+
+### Monitor from Local Machine
+
+```bash
+gcloud compute ssh connect4-training --zone=us-central1-a \
+  --command="tail -f /home/$(whoami)/connect4-alphazero/logs/training.log"
+```
+
+### Download Results
+
+```bash
+gcloud compute scp --recurse \
+  connect4-training:/home/$(whoami)/connect4-alphazero/checkpoints/ \
+  /Users/eugenep/git/connect4-alphazero/checkpoints/ \
+  --zone=us-central1-a
+```
+
+### Stop the VM When Done (avoids charges)
+
+```bash
+gcloud compute instances stop connect4-training --zone=us-central1-a
+# Delete entirely when no longer needed:
+gcloud compute instances delete connect4-training --zone=us-central1-a
+```
+
+---
+
+## Option D — Vast.ai (Paid, Full Production Run)
 
 For the full `full.yaml` run (600 sims × 5000 games × 25 iterations, ~$15-20 total).
 
@@ -174,6 +255,51 @@ ssh -p <port> root@<ip> "tail -f /workspace/connect4/logs/training.log"
 rsync -av root@<ip>:<port-path>/workspace/connect4/checkpoints/ \
   /Users/eugenep/git/connect4-alphazero/checkpoints/
 ```
+
+---
+
+## Parallelizing Training
+
+### Where the Time Goes
+
+Self-play dominates (~85% of each iteration). The GPU is underutilized because MCTS is a sequential Python loop — each simulation calls the NN once, serially. The GPU sits idle between calls.
+
+| Phase | medium.yaml | Parallelizable? |
+|---|---|---|
+| Self-play (MCTS) | ~87 min | ✅ Yes — games are independent |
+| NN training | ~3 min | ✅ Yes — multi-GPU DataParallel |
+| Arena | ~10 min | Partially |
+| Benchmark | ~8 min | Partially |
+
+### Option 1 — Parallel Self-Play Workers (High Impact, Requires Code Change)
+
+The biggest speedup: run N games simultaneously using Python `multiprocessing`. Each worker process plays one game independently. With 4–8 workers on a multi-core instance, self-play becomes 4–8× faster.
+
+**Tradeoff:** Each worker needs its own model copy. On CPU this is fine (model is only 6MB). On GPU, workers share CUDA context which requires `torch.multiprocessing` with `spawn` start method.
+
+**Practical approach for GCP:** Use an 8-core instance (`n1-standard-8`), run 4 CPU workers for self-play, and keep the GPU exclusively for the training step. Even with CPU inference, 4 parallel games typically beats 1 GPU game because Python overhead (not GPU compute) is the bottleneck at batch size 1.
+
+This is listed in the project's performance optimization checklist (`CLAUDE.md` §14) and is the next planned optimization.
+
+### Option 2 — Batched MCTS Inference (High Impact, Complex)
+
+Instead of 1 NN call per simulation, collect multiple pending leaf nodes across parallel MCTS trees and batch them into a single GPU call. This is how the original AlphaZero achieves high GPU utilization.
+
+Speedup: 5–10× GPU throughput. Complexity: significant refactor of `src/mcts/search.py`.
+
+### Option 3 — Multi-GPU DataParallel (Low Impact for This Workload)
+
+`torch.nn.DataParallel` splits each training batch across multiple GPUs. Since training is already fast (~3 min), this gives minimal overall speedup. Not worth the complexity unless the model grows much larger.
+
+### Summary
+
+| Optimization | Speedup | Effort | Status |
+|---|---|---|---|
+| Parallel self-play workers | 4–8× | Medium | Planned |
+| Batched MCTS inference | 5–10× | High | Future |
+| Multi-GPU DataParallel | ~1.1× | Low | Not worth it |
+
+For now, the most practical path with $400 GCP credit is to run `full.yaml` on a single V100 (fast enough as-is) and implement parallel self-play workers as the next code improvement.
 
 ---
 
