@@ -1,35 +1,41 @@
-"""Package kaggle_agent.py + ONNX model into a Kaggle submission.
+"""Package a Kaggle Connect-X submission.
 
-Three modes:
+Modes:
 
-  Base64 mode (--base64, RECOMMENDED for Connect-X):
-    Writes submission/main.py with the ONNX model embedded as a base64
-    string. Upload main.py directly — no dataset, no zip, no notebook.
-    On first call, the model is decoded to a temp file and loaded.
+  --tar (RECOMMENDED):
+    Pure numpy inference, no onnxruntime needed.
+    Extracts weights from a .pt checkpoint into weights.npz.
+    Bundles main.py + weights.npz as submission.tar.gz.
+    Kaggle extracts the archive to /kaggle_simulations/agent/ and runs main.py.
 
-  Zip mode (--zip, DOES NOT WORK for Connect-X):
-    Kaggle does not extract zip archives for Connect-X submissions.
-    It places the raw zip bytes at /kaggle_simulations/agent/main.py and
-    tries to compile them as Python, causing a SyntaxError.
+  --base64:
+    ONNX-based inference, model embedded as base64 in a single main.py.
+    Requires onnxruntime in the Kaggle environment — currently NOT available
+    in Connect-X simulation environment.
 
-  Directory mode (default):
-    Writes submission/submission.py + model.onnx for notebook-based
-    submissions that attach the model as a separate Kaggle Dataset.
+  --zip (BROKEN for Connect-X):
+    Kaggle does not extract zip archives — it tries to compile the raw zip
+    bytes as Python, causing a SyntaxError. Kept for reference only.
+
+  (default, no flag):
+    Directory mode — submission.py + model.onnx for notebook submissions
+    that attach the model as a Kaggle Dataset.
 
 Usage:
-    # Base64 — single file upload (recommended for Connect-X)
-    python scripts/kaggle_submit.py --model model.onnx --output submission/ --base64
+    # Tar — pure numpy, no external deps (RECOMMENDED for Connect-X)
+    python scripts/kaggle_submit.py --checkpoint checkpoints/baseline_b2_f32.pt \\
+        --output submission/ --tar
 
-    # Directory — for notebook submissions with a separate dataset
-    python scripts/kaggle_submit.py --model model.onnx --output submission/ \\
-        --dataset-path /kaggle/input/connect4-alphazero-model/model.onnx \\
-        --num-sims 200
+    # Base64 (if onnxruntime were available)
+    python scripts/kaggle_submit.py --model model.onnx --output submission/ --base64
 """
 
 import argparse
 import base64
+import io
 import shutil
 import sys
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -37,22 +43,56 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 _AGENT_SOURCE: Path = _PROJECT_ROOT / "src" / "export" / "kaggle_agent.py"
+_NUMPY_AGENT_SOURCE: Path = _PROJECT_ROOT / "src" / "export" / "kaggle_agent_numpy.py"
 
-# Sentinel strings that appear exactly once in kaggle_agent.py
+# Sentinels in kaggle_agent.py (onnx-based)
 _MODEL_PATH_SENTINEL: str = '_MODEL_PATH: str = "model.onnx"'
 _NUM_SIMS_SENTINEL: str = "_NUM_MCTS_SIMS: int = 200"
+
+# Sentinel in kaggle_agent_numpy.py
+_NUMPY_NUM_SIMS_SENTINEL: str = "_NUM_MCTS_SIMS: int = 200  # sentinel"
 
 
 def _parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Package kaggle_agent.py + ONNX model into a Kaggle submission."
+        description="Package a Kaggle Connect-X submission."
+    )
+
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--tar",
+        action="store_true",
+        default=False,
+        help=(
+            "Pure numpy inference. Extracts weights from --checkpoint to weights.npz, "
+            "bundles with main.py as submission.tar.gz. (RECOMMENDED)"
+        ),
+    )
+    mode.add_argument(
+        "--base64",
+        action="store_true",
+        default=False,
+        help="Embed ONNX model as base64 in a single main.py (requires onnxruntime on Kaggle).",
+    )
+    mode.add_argument(
+        "--zip",
+        action="store_true",
+        default=False,
+        help="(BROKEN for Connect-X) submission.zip with main.py + model.onnx.",
+    )
+
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Path to .pt checkpoint (required for --tar).",
     )
     parser.add_argument(
         "--model",
         type=str,
-        required=True,
-        help="Path to the exported .onnx model file.",
+        default=None,
+        help="Path to .onnx model file (required for --base64, --zip, default).",
     )
     parser.add_argument(
         "--output",
@@ -60,76 +100,123 @@ def _parse_args() -> argparse.Namespace:
         required=True,
         help="Output directory for the submission package.",
     )
-
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--base64",
-        action="store_true",
-        default=False,
-        help=(
-            "Embed the ONNX model as base64 in a single main.py. "
-            "Upload main.py directly to Kaggle Connect-X. (RECOMMENDED)"
-        ),
-    )
-    mode.add_argument(
-        "--zip",
-        action="store_true",
-        default=False,
-        help=(
-            "Create submission.zip with main.py + model.onnx. "
-            "NOTE: does not work for Connect-X — Kaggle does not extract zips."
-        ),
-    )
-
-    parser.add_argument(
-        "--dataset-path",
-        type=str,
-        default="/kaggle/input/connect4-alphazero-model/model.onnx",
-        help=(
-            "Model path on Kaggle's filesystem (directory mode only). "
-            "Default: /kaggle/input/connect4-alphazero-model/model.onnx"
-        ),
-    )
     parser.add_argument(
         "--num-sims",
         type=int,
         default=200,
         help="Number of MCTS simulations per move (default: 200).",
     )
+    parser.add_argument(
+        "--dataset-path",
+        type=str,
+        default="/kaggle/input/connect4-alphazero-model/model.onnx",
+        help="Model path on Kaggle (directory mode only).",
+    )
     return parser.parse_args()
 
 
-def _read_and_validate_source() -> str:
-    """Read kaggle_agent.py and validate both sentinels are present."""
+# -------------------------------------------------------------------------
+# --tar mode: numpy inference, tar.gz archive
+# -------------------------------------------------------------------------
+
+def _extract_weights_npz(checkpoint_path: Path) -> bytes:
+    """Load a .pt checkpoint and return compressed npz bytes of its weights.
+
+    Filters out num_batches_tracked (bookkeeping only) and includes
+    num_blocks and num_filters so the inference code can reconstruct
+    the architecture without a separate config.
+    """
+    import torch
+    import numpy as np
+
+    ckpt = torch.load(str(checkpoint_path), weights_only=False, map_location="cpu")
+    weights = {}
+    for k, v in ckpt["model_state_dict"].items():
+        if "num_batches_tracked" not in k:
+            # Use .tolist() to work around missing NumPy C bridge in this build
+            weights[k] = np.array(v.tolist(), dtype=np.float32)
+    weights["num_blocks"] = np.array(ckpt["num_blocks"])
+    weights["num_filters"] = np.array(ckpt["num_filters"])
+
+    buf = io.BytesIO()
+    np.savez_compressed(buf, **weights)
+    return buf.getvalue()
+
+
+def _build_tar_submission(
+    output_dir: Path,
+    checkpoint_path: Path,
+    num_sims: int,
+) -> Path:
+    """Create submission.tar.gz: main.py (numpy agent) + weights.npz.
+
+    Kaggle extracts the archive to /kaggle_simulations/agent/ and runs main.py.
+    weights.npz lands in the same directory, so _WEIGHTS_PATH resolves correctly.
+    """
+    if not _NUMPY_AGENT_SOURCE.exists():
+        print(f"Error: numpy agent source not found: {_NUMPY_AGENT_SOURCE}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Extracting weights from {checkpoint_path} ...")
+    npz_bytes = _extract_weights_npz(checkpoint_path)
+
+    import numpy as np
+    npz_size_kb = len(npz_bytes) / 1024
+    npz = np.load(io.BytesIO(npz_bytes))
+    total_params = sum(npz[k].size for k in npz.files if k not in ("num_blocks", "num_filters"))
+    print(f"  {total_params:,} parameters → {npz_size_kb:.0f} KB compressed npz")
+
+    # Build main.py from the numpy agent template
+    source = _NUMPY_AGENT_SOURCE.read_text(encoding="utf-8")
+    if _NUMPY_NUM_SIMS_SENTINEL not in source:
+        print(f"Error: sentinel not found in {_NUMPY_AGENT_SOURCE}:\n  {_NUMPY_NUM_SIMS_SENTINEL}", file=sys.stderr)
+        sys.exit(1)
+
+    source = source.replace(
+        _NUMPY_NUM_SIMS_SENTINEL,
+        f"_NUM_MCTS_SIMS: int = {num_sims}",
+    )
+
+    # Build tar.gz
+    tar_path = output_dir / "submission.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tf:
+        # main.py
+        main_bytes = source.encode("utf-8")
+        info = tarfile.TarInfo(name="main.py")
+        info.size = len(main_bytes)
+        tf.addfile(info, io.BytesIO(main_bytes))
+        # weights.npz
+        info2 = tarfile.TarInfo(name="weights.npz")
+        info2.size = len(npz_bytes)
+        tf.addfile(info2, io.BytesIO(npz_bytes))
+
+    size_mb = tar_path.stat().st_size / (1024 * 1024)
+    print(f"Wrote {tar_path}  ({size_mb:.2f} MB)")
+    print(f"\nSubmission ready: {tar_path}")
+    print(f"  main.py     (numpy ResNet + MCTS, {num_sims} sims)")
+    print(f"  weights.npz ({npz_size_kb:.0f} KB)")
+    print("\nNext step: upload submission.tar.gz to Kaggle → Submit Predictions.")
+    return tar_path
+
+
+# -------------------------------------------------------------------------
+# --base64 mode: onnxruntime, base64-embedded model
+# -------------------------------------------------------------------------
+
+def _read_and_validate_onnx_source() -> str:
     source = _AGENT_SOURCE.read_text(encoding="utf-8")
     for sentinel in (_MODEL_PATH_SENTINEL, _NUM_SIMS_SENTINEL):
         if sentinel not in source:
-            print(
-                f"Error: sentinel not found in {_AGENT_SOURCE}:\n  {sentinel}",
-                file=sys.stderr,
-            )
+            print(f"Error: sentinel not found in {_AGENT_SOURCE}:\n  {sentinel}", file=sys.stderr)
             sys.exit(1)
     return source
 
 
-def _apply_num_sims(source: str, num_sims: int) -> str:
-    return source.replace(_NUM_SIMS_SENTINEL, f"_NUM_MCTS_SIMS: int = {num_sims}")
-
-
 def _build_base64_submission(output_dir: Path, model_path: Path, num_sims: int) -> Path:
-    """Create a single main.py with the ONNX model embedded as base64.
-
-    The model bytes are decoded to a temp file on first agent call, so
-    _MODEL_PATH resolves at runtime without any external file dependency.
-    Upload main.py directly to Kaggle Connect-X submissions.
-    """
+    """Single main.py with ONNX model embedded as base64. Requires onnxruntime on Kaggle."""
     model_b64 = base64.b64encode(model_path.read_bytes()).decode("ascii")
-
-    source = _read_and_validate_source()
-    source = _apply_num_sims(source, num_sims)
-
-    # Replace the _MODEL_PATH sentinel with a block that decodes the embedded
-    # model to a temp file and sets _MODEL_PATH to that temp file's path.
+    source = _read_and_validate_onnx_source()
+    source = source.replace(_NUM_SIMS_SENTINEL, f"_NUM_MCTS_SIMS: int = {num_sims}")
     b64_block = (
         "# ONNX model embedded as base64 — no external file needed\n"
         "import base64 as _b64m, tempfile as _tmpm, atexit as _atm, os as _osm\n"
@@ -144,89 +231,83 @@ def _build_base64_submission(output_dir: Path, model_path: Path, num_sims: int) 
 
     output_path = output_dir / "main.py"
     output_path.write_text(source, encoding="utf-8")
-
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    model_mb = model_path.stat().st_size / (1024 * 1024)
     print(f"Wrote {output_path}  ({size_mb:.2f} MB)")
-    print(f"\nSubmission ready: {output_path}")
-    print(f"  Embedded model: {model_mb:.2f} MB → {size_mb:.2f} MB as base64")
-    print(f"  MCTS sims:      {num_sims}")
-    print("\nNext step: upload main.py directly to Kaggle → Submit Predictions.")
+    print("\nWARNING: onnxruntime is not available in Kaggle Connect-X environment.")
+    print("Use --tar for a numpy-only submission that works without onnxruntime.")
     return output_path
 
 
+# -------------------------------------------------------------------------
+# --zip mode (broken) and directory mode
+# -------------------------------------------------------------------------
+
 def _build_zip(output_dir: Path, model_path: Path, num_sims: int) -> Path:
-    """Create submission.zip with main.py + model.onnx.
-
-    WARNING: Kaggle Connect-X does not extract zip archives. This mode
-    is kept for reference but --base64 is the correct approach.
-    """
-    source = _read_and_validate_source()
-    source = _apply_num_sims(source, num_sims)
+    source = _read_and_validate_onnx_source()
+    source = source.replace(_NUM_SIMS_SENTINEL, f"_NUM_MCTS_SIMS: int = {num_sims}")
     source = source.replace(_MODEL_PATH_SENTINEL, '_MODEL_PATH: str = "model.onnx"')
-
     zip_path = output_dir / "submission.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("main.py", source)
         zf.write(model_path, arcname="model.onnx")
-
     size_mb = zip_path.stat().st_size / (1024 * 1024)
     print(f"Wrote {zip_path}  ({size_mb:.2f} MB)")
-    print("\nWARNING: Kaggle Connect-X does not extract zip archives.")
-    print("Use --base64 instead for a single self-contained main.py.")
+    print("\nWARNING: Kaggle does not extract zip archives for Connect-X. Use --tar.")
     return zip_path
 
 
-def _build_directory(
-    output_dir: Path,
-    model_path: Path,
-    dataset_path: str,
-    num_sims: int,
-) -> None:
-    """Create submission/ directory with submission.py + model.onnx."""
-    source = _read_and_validate_source()
-    source = _apply_num_sims(source, num_sims)
+def _build_directory(output_dir: Path, model_path: Path, dataset_path: str, num_sims: int) -> None:
+    source = _read_and_validate_onnx_source()
+    source = source.replace(_NUM_SIMS_SENTINEL, f"_NUM_MCTS_SIMS: int = {num_sims}")
     source = source.replace(_MODEL_PATH_SENTINEL, f'_MODEL_PATH: str = "{dataset_path}"')
-
     submission_py = output_dir / "submission.py"
     submission_py.write_text(source, encoding="utf-8")
-    print(f"Wrote {submission_py}")
-
     dest_model = output_dir / model_path.name
     shutil.copy2(model_path, dest_model)
+    print(f"Wrote {submission_py}")
     print(f"Copied model to {dest_model}")
+    print(f"\nNext steps:\n  1. Upload {model_path.name} as a Kaggle Dataset.\n  2. Submit submission.py via Kaggle notebook.")
 
-    print(f"\nSubmission package ready in: {output_dir}/")
-    print(f"  submission.py  (_MODEL_PATH={dataset_path!r})")
-    print(f"  {model_path.name}")
-    print(
-        "\nNext steps:"
-        "\n  1. Upload model.onnx as a Kaggle Dataset."
-        "\n  2. Submit submission.py via Kaggle notebook."
-    )
 
+# -------------------------------------------------------------------------
+# Entry point
+# -------------------------------------------------------------------------
 
 def main() -> None:
     """Build the submission package."""
     args = _parse_args()
-    model_path = Path(args.model)
     output_dir = Path(args.output)
-
-    if not model_path.exists():
-        print(f"Error: model file not found: {model_path}", file=sys.stderr)
-        sys.exit(1)
-
-    if not _AGENT_SOURCE.exists():
-        print(f"Error: agent source not found: {_AGENT_SOURCE}", file=sys.stderr)
-        sys.exit(1)
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.base64:
+    if args.tar:
+        if not args.checkpoint:
+            print("Error: --tar requires --checkpoint <path/to/checkpoint.pt>", file=sys.stderr)
+            sys.exit(1)
+        checkpoint_path = Path(args.checkpoint)
+        if not checkpoint_path.exists():
+            print(f"Error: checkpoint not found: {checkpoint_path}", file=sys.stderr)
+            sys.exit(1)
+        _build_tar_submission(output_dir, checkpoint_path, args.num_sims)
+
+    elif args.base64:
+        model_path = Path(args.model) if args.model else None
+        if not model_path or not model_path.exists():
+            print("Error: --base64 requires --model <path/to/model.onnx>", file=sys.stderr)
+            sys.exit(1)
         _build_base64_submission(output_dir, model_path, args.num_sims)
+
     elif args.zip:
+        model_path = Path(args.model) if args.model else None
+        if not model_path or not model_path.exists():
+            print("Error: --zip requires --model <path/to/model.onnx>", file=sys.stderr)
+            sys.exit(1)
         _build_zip(output_dir, model_path, args.num_sims)
+
     else:
+        model_path = Path(args.model) if args.model else None
+        if not model_path or not model_path.exists():
+            print("Error: directory mode requires --model <path/to/model.onnx>", file=sys.stderr)
+            sys.exit(1)
         _build_directory(output_dir, model_path, args.dataset_path, args.num_sims)
 
 
