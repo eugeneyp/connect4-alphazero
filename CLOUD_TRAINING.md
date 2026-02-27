@@ -24,7 +24,7 @@ Kaggle's **Save & Run All** runs your notebook to completion in a background wor
 ### Cell 1 — Clone and Install
 
 ```python
-!git clone https://github.com/YOUR_USERNAME/connect4-alphazero.git /kaggle/working/connect4-alphazero
+!git clone https://github.com/eugenep/connect4-alphazero.git /kaggle/working/connect4-alphazero
 !pip install -e /kaggle/working/connect4-alphazero -q
 ```
 
@@ -77,7 +77,7 @@ from google.colab import drive
 drive.mount('/content/drive')
 
 # Clone and install
-!git clone https://github.com/YOUR_USERNAME/connect4-alphazero.git /content/connect4-alphazero
+!git clone https://github.com/eugenep/connect4-alphazero.git /content/connect4-alphazero
 !pip install -e /content/connect4-alphazero -q
 
 # Symlink checkpoints → Drive (survives disconnects)
