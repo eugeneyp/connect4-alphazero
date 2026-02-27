@@ -77,7 +77,9 @@ From now on, every checkpoint saved by the training script goes straight to your
 ## Step 5 — Start Training
 
 ```python
-!python scripts/train.py --config configs/cloud.yaml 2>&1 | tee /content/drive/MyDrive/connect4-training.log
+!python /content/connect4-alphazero/scripts/train.py \
+  --config /content/connect4-alphazero/configs/cloud.yaml \
+  2>&1 | tee /content/drive/MyDrive/connect4-training.log
 ```
 
 The `tee` command writes output both to the notebook cell AND to a log file on Drive. If the session disconnects, the log file preserves everything logged so far.
