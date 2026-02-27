@@ -14,6 +14,8 @@ Training on cloud GPU. Choose your platform:
 
 Kaggle's **Save & Run All** runs your notebook to completion in a background worker — even if you close the browser. Output streams live so you can check in anytime.
 
+**Session limit:** Committed runs have a ~9-hour hard cutoff. With `medium.yaml` (~100 min/iter) you'll get ~5-6 iterations per session. The checkpoints saved before cutoff are preserved in the Output tab — resume in a second session to finish the remaining iterations.
+
 ### Setup
 
 1. Go to [kaggle.com/code](https://kaggle.com/code) → **New Notebook**
@@ -38,28 +40,41 @@ Kaggle's **Save & Run All** runs your notebook to completion in a background wor
 
 Checkpoints are saved to `/kaggle/working/checkpoints/` automatically.
 
-### Cell 3 — (Optional) Resume from a previous run
-
-Upload your previous `checkpoint_iter_NNN.pt` as a Kaggle Dataset, then:
-
-```python
-import os, glob
-checkpoints = sorted(glob.glob('/kaggle/input/YOUR-DATASET/checkpoint_iter_*.pt'))
-latest = checkpoints[-1]
-print(f"Resuming from: {latest}")
-
-%cd /kaggle/working/connect4-alphazero
-!python scripts/train.py --config configs/cloud.yaml --resume {latest} \
-  2>&1 | tee /kaggle/working/training.log
-```
-
 ### Running
 
 Click **Save Version** → **Save & Run All** → **Save**. The notebook queues as a background job. You can close the browser and return later — output streams live when you revisit.
 
+If you get a `ConcurrencyViolation` error, refresh the page and try again (stale sequence number from a previously stopped run).
+
+### Resuming After Session Cutoff (~9h limit)
+
+When the session times out, Kaggle saves everything in `/kaggle/working/` as the run's output.
+
+**Step 1 — Publish the output as a dataset:**
+- Go to the notebook → **Output** tab → **New Dataset**
+- Give it a name (e.g. `connect4-checkpoints`) and publish it
+
+**Step 2 — Add it as input to your next run:**
+- Open the notebook → **Add data** → search for your dataset → add it
+- It will appear at `/kaggle/input/connect4-checkpoints/`
+
+**Step 3 — Replace Cell 2 with the resume cell:**
+
+```python
+import glob
+
+checkpoints = sorted(glob.glob('/kaggle/input/connect4-checkpoints/checkpoints/checkpoint_iter_*.pt'))
+latest = checkpoints[-1]
+print(f"Resuming from: {latest}")
+
+%cd /kaggle/working/connect4-alphazero
+!python scripts/train.py --config configs/medium.yaml --resume {latest} \
+  2>&1 | tee /kaggle/working/training.log
+```
+
 ### Downloading Results
 
-After the run completes, go to the notebook's **Output** tab:
+After the final run completes, go to the notebook's **Output** tab:
 - `checkpoints/best_model.pt` — download this
 - `training.log` — download for analysis
 
@@ -212,9 +227,10 @@ python scripts/kaggle_submit.py \
 
 ## Config Reference
 
-| Config | Model | Sims | Games/iter | Time/iter | Use |
+| Config | Model | Sims | Games/iter | Time/iter (P100) | Use |
 |---|---|---|---|---|---|
 | `tiny.yaml` | 2b/32f | 50 | 100 | ~5 min | Local unit tests |
-| `small.yaml` | 3b/64f | 200 | 1000 | ~1-2h | Quick validation |
-| `cloud.yaml` | 5b/128f | 100 | 200 | ~20 min | **Free cloud (Kaggle/Colab)** |
+| `cloud.yaml` | 5b/128f | 100 | 200 | ~20 min | Pipeline validation |
+| `medium.yaml` | 4b/64f | 200 | 800 | ~100 min | **Kaggle/Colab training run** |
+| `small.yaml` | 3b/64f | 200 | 1000 | ~1-2h | Alternative medium run |
 | `full.yaml` | 5b/128f | 600 | 5000 | ~2-4h | Vast.ai production run |
