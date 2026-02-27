@@ -277,7 +277,8 @@ class MCTS:
         Returns:
             Float32 tensor of shape (1, 3, 6, 7).
         """
-        return torch.tensor(board.encode().tolist(), dtype=torch.float32).unsqueeze(0)
+        device = next(self.model.parameters()).device
+        return torch.tensor(board.encode().tolist(), dtype=torch.float32).unsqueeze(0).to(device)
 
     def _build_legal_moves_mask(self, board: Connect4Board) -> np.ndarray:
         """Build a boolean mask of legal moves.

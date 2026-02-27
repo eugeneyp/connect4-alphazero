@@ -59,16 +59,18 @@ class Trainer:
         """
         self._model.train()
 
+        device = next(self._model.parameters()).device
+
         # Convert numpy arrays → tensors via .tolist() (numpy C bridge unavailable)
         states = torch.tensor(
             np.stack([s.state for s in batch]).tolist(), dtype=torch.float32
-        )
+        ).to(device)
         target_policies = torch.tensor(
             np.stack([s.policy for s in batch]).tolist(), dtype=torch.float32
-        )
+        ).to(device)
         target_values = torch.tensor(
             [s.value for s in batch], dtype=torch.float32
-        ).unsqueeze(1)
+        ).unsqueeze(1).to(device)
 
         policy_logits, value = self._model(states)
 

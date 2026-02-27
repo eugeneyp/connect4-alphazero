@@ -43,12 +43,16 @@ class Coach:
         self._config = config
         self._replay_buffer = ReplayBuffer(config.training.replay_buffer_max_size)
 
-        # Create the model
+        # Create the model and move to available device
+        self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        logger.info("Using device: %s", self._device)
+
         self._model = Connect4Net(
             num_blocks=config.model.num_residual_blocks,
             num_filters=config.model.num_filters,
             input_planes=config.model.input_planes,
         )
+        self._model.to(self._device)
 
         checkpoint_dir = Path(config.training.checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -197,4 +201,5 @@ class Coach:
         )
         model.load_state_dict(checkpoint["model_state_dict"])
         model.eval()
+        model.to(self._device)
         return model
