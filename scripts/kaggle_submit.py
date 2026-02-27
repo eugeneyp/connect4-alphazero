@@ -1,25 +1,33 @@
 """Package kaggle_agent.py + ONNX model into a Kaggle submission.
 
-Two modes:
-  Directory mode (default): writes submission/submission.py + model.onnx.
-    Use when submitting via Kaggle notebook with a separately-uploaded dataset.
+Three modes:
 
-  Zip mode (--zip): writes submission/submission.zip containing main.py +
-    model.onnx. Upload the zip directly to Kaggle — no separate dataset needed.
-    Kaggle extracts the archive and runs main.py; model.onnx is in the same
-    directory, so _MODEL_PATH = "model.onnx" (the default) works as-is.
+  Base64 mode (--base64, RECOMMENDED for Connect-X):
+    Writes submission/main.py with the ONNX model embedded as a base64
+    string. Upload main.py directly — no dataset, no zip, no notebook.
+    On first call, the model is decoded to a temp file and loaded.
+
+  Zip mode (--zip, DOES NOT WORK for Connect-X):
+    Kaggle does not extract zip archives for Connect-X submissions.
+    It places the raw zip bytes at /kaggle_simulations/agent/main.py and
+    tries to compile them as Python, causing a SyntaxError.
+
+  Directory mode (default):
+    Writes submission/submission.py + model.onnx for notebook-based
+    submissions that attach the model as a separate Kaggle Dataset.
 
 Usage:
-    # Zip archive — upload submission.zip directly (recommended)
-    python scripts/kaggle_submit.py --model model.onnx --output submission/ --zip
+    # Base64 — single file upload (recommended for Connect-X)
+    python scripts/kaggle_submit.py --model model.onnx --output submission/ --base64
 
-    # Directory — for notebook-based submissions with a separate dataset
+    # Directory — for notebook submissions with a separate dataset
     python scripts/kaggle_submit.py --model model.onnx --output submission/ \\
         --dataset-path /kaggle/input/connect4-alphazero-model/model.onnx \\
         --num-sims 200
 """
 
 import argparse
+import base64
 import shutil
 import sys
 import zipfile
@@ -52,22 +60,34 @@ def _parse_args() -> argparse.Namespace:
         required=True,
         help="Output directory for the submission package.",
     )
-    parser.add_argument(
+
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--base64",
+        action="store_true",
+        default=False,
+        help=(
+            "Embed the ONNX model as base64 in a single main.py. "
+            "Upload main.py directly to Kaggle Connect-X. (RECOMMENDED)"
+        ),
+    )
+    mode.add_argument(
         "--zip",
         action="store_true",
         default=False,
         help=(
-            "Create a zip archive (main.py + model.onnx) for direct Kaggle upload. "
-            "_MODEL_PATH is kept as 'model.onnx' (relative, works inside the archive)."
+            "Create submission.zip with main.py + model.onnx. "
+            "NOTE: does not work for Connect-X — Kaggle does not extract zips."
         ),
     )
+
     parser.add_argument(
         "--dataset-path",
         type=str,
         default="/kaggle/input/connect4-alphazero-model/model.onnx",
         help=(
-            "Path to the model on Kaggle's filesystem, used in directory mode "
-            "(default: /kaggle/input/connect4-alphazero-model/model.onnx)."
+            "Model path on Kaggle's filesystem (directory mode only). "
+            "Default: /kaggle/input/connect4-alphazero-model/model.onnx"
         ),
     )
     parser.add_argument(
@@ -79,49 +99,71 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _build_source(num_sims: int, model_path_str: str) -> str:
-    """Read kaggle_agent.py and replace sentinel lines.
-
-    Args:
-        num_sims: Number of MCTS simulations to bake in.
-        model_path_str: The _MODEL_PATH value to write into the source.
-
-    Returns:
-        Modified source code as a string.
-    """
+def _read_and_validate_source() -> str:
+    """Read kaggle_agent.py and validate both sentinels are present."""
     source = _AGENT_SOURCE.read_text(encoding="utf-8")
-
-    if _MODEL_PATH_SENTINEL not in source:
-        print(
-            f"Error: sentinel not found in {_AGENT_SOURCE}:\n  {_MODEL_PATH_SENTINEL}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    if _NUM_SIMS_SENTINEL not in source:
-        print(
-            f"Error: sentinel not found in {_AGENT_SOURCE}:\n  {_NUM_SIMS_SENTINEL}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    source = source.replace(
-        _MODEL_PATH_SENTINEL,
-        f'_MODEL_PATH: str = "{model_path_str}"',
-    )
-    source = source.replace(
-        _NUM_SIMS_SENTINEL,
-        f"_NUM_MCTS_SIMS: int = {num_sims}",
-    )
+    for sentinel in (_MODEL_PATH_SENTINEL, _NUM_SIMS_SENTINEL):
+        if sentinel not in source:
+            print(
+                f"Error: sentinel not found in {_AGENT_SOURCE}:\n  {sentinel}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
     return source
 
 
-def _build_zip(output_dir: Path, model_path: Path, num_sims: int) -> Path:
-    """Create a zip archive with main.py + model.onnx for direct Kaggle upload.
+def _apply_num_sims(source: str, num_sims: int) -> str:
+    return source.replace(_NUM_SIMS_SENTINEL, f"_NUM_MCTS_SIMS: int = {num_sims}")
 
-    Kaggle extracts the archive alongside main.py, so _MODEL_PATH = "model.onnx"
-    (a plain filename, no directory prefix) works without a separate dataset.
+
+def _build_base64_submission(output_dir: Path, model_path: Path, num_sims: int) -> Path:
+    """Create a single main.py with the ONNX model embedded as base64.
+
+    The model bytes are decoded to a temp file on first agent call, so
+    _MODEL_PATH resolves at runtime without any external file dependency.
+    Upload main.py directly to Kaggle Connect-X submissions.
     """
-    source = _build_source(num_sims, model_path_str="model.onnx")
+    model_b64 = base64.b64encode(model_path.read_bytes()).decode("ascii")
+
+    source = _read_and_validate_source()
+    source = _apply_num_sims(source, num_sims)
+
+    # Replace the _MODEL_PATH sentinel with a block that decodes the embedded
+    # model to a temp file and sets _MODEL_PATH to that temp file's path.
+    b64_block = (
+        "# ONNX model embedded as base64 — no external file needed\n"
+        "import base64 as _b64m, tempfile as _tmpm, atexit as _atm, os as _osm\n"
+        f'_MODEL_DATA: str = "{model_b64}"\n'
+        "_b64_tmp = _tmpm.NamedTemporaryFile(suffix='.onnx', delete=False)\n"
+        "_b64_tmp.write(_b64m.b64decode(_MODEL_DATA))\n"
+        "_b64_tmp.close()\n"
+        "_MODEL_PATH: str = _b64_tmp.name\n"
+        "_atm.register(lambda: _osm.unlink(_MODEL_PATH) if _osm.path.exists(_MODEL_PATH) else None)"
+    )
+    source = source.replace(_MODEL_PATH_SENTINEL, b64_block)
+
+    output_path = output_dir / "main.py"
+    output_path.write_text(source, encoding="utf-8")
+
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+    model_mb = model_path.stat().st_size / (1024 * 1024)
+    print(f"Wrote {output_path}  ({size_mb:.2f} MB)")
+    print(f"\nSubmission ready: {output_path}")
+    print(f"  Embedded model: {model_mb:.2f} MB → {size_mb:.2f} MB as base64")
+    print(f"  MCTS sims:      {num_sims}")
+    print("\nNext step: upload main.py directly to Kaggle → Submit Predictions.")
+    return output_path
+
+
+def _build_zip(output_dir: Path, model_path: Path, num_sims: int) -> Path:
+    """Create submission.zip with main.py + model.onnx.
+
+    WARNING: Kaggle Connect-X does not extract zip archives. This mode
+    is kept for reference but --base64 is the correct approach.
+    """
+    source = _read_and_validate_source()
+    source = _apply_num_sims(source, num_sims)
+    source = source.replace(_MODEL_PATH_SENTINEL, '_MODEL_PATH: str = "model.onnx"')
 
     zip_path = output_dir / "submission.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -130,10 +172,8 @@ def _build_zip(output_dir: Path, model_path: Path, num_sims: int) -> Path:
 
     size_mb = zip_path.stat().st_size / (1024 * 1024)
     print(f"Wrote {zip_path}  ({size_mb:.2f} MB)")
-    print(f"\nSubmission zip ready: {zip_path}")
-    print("  main.py        (agent, _MODEL_PATH='model.onnx')")
-    print(f"  model.onnx     ({model_path.stat().st_size / (1024*1024):.2f} MB)")
-    print("\nNext step: upload submission.zip directly to Kaggle → Submit Predictions.")
+    print("\nWARNING: Kaggle Connect-X does not extract zip archives.")
+    print("Use --base64 instead for a single self-contained main.py.")
     return zip_path
 
 
@@ -144,9 +184,9 @@ def _build_directory(
     num_sims: int,
 ) -> None:
     """Create submission/ directory with submission.py + model.onnx."""
-    source = _build_source(num_sims, model_path_str=dataset_path)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
+    source = _read_and_validate_source()
+    source = _apply_num_sims(source, num_sims)
+    source = source.replace(_MODEL_PATH_SENTINEL, f'_MODEL_PATH: str = "{dataset_path}"')
 
     submission_py = output_dir / "submission.py"
     submission_py.write_text(source, encoding="utf-8")
@@ -162,7 +202,7 @@ def _build_directory(
     print(
         "\nNext steps:"
         "\n  1. Upload model.onnx as a Kaggle Dataset."
-        "\n  2. Submit submission.py as a Kaggle notebook agent."
+        "\n  2. Submit submission.py via Kaggle notebook."
     )
 
 
@@ -182,7 +222,9 @@ def main() -> None:
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.zip:
+    if args.base64:
+        _build_base64_submission(output_dir, model_path, args.num_sims)
+    elif args.zip:
         _build_zip(output_dir, model_path, args.num_sims)
     else:
         _build_directory(output_dir, model_path, args.dataset_path, args.num_sims)
