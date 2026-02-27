@@ -172,15 +172,15 @@ class Coach:
             # ----------------------------------------------------------------
             self._log_benchmark(model)
 
-    def _log_benchmark(self, model: Connect4Net, num_games: int = 40) -> None:
-        """Run a quick benchmark of the current model vs random and minimax(d=1).
+    def _log_benchmark(self, model: Connect4Net, num_games: int = 30) -> None:
+        """Run a quick benchmark of the current model vs random and minimax agents.
 
         Plays num_games against each opponent (half as P1, half as P2) and
-        logs win rates. Uses only 50 MCTS simulations for speed.
+        logs win rates. Uses 50 MCTS simulations for speed.
 
         Args:
             model: The current best model to benchmark.
-            num_games: Games per opponent (default 40 — fast but informative).
+            num_games: Games per opponent (default 30).
         """
         bench_config = MCTSConfig(num_simulations=50)
         mcts = MCTS(model, bench_config)
@@ -189,6 +189,7 @@ class Coach:
         opponents = [
             ("Random", RandomAgent()),
             ("Minimax(d=1)", MinimaxAgent(max_depth=1)),
+            ("Minimax(d=3)", MinimaxAgent(max_depth=3)),
         ]
 
         for opp_name, opp in opponents:
