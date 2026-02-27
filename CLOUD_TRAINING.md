@@ -4,7 +4,7 @@ Training on cloud GPU. Choose your platform:
 
 | Platform | GPU | Free hours | Disconnects? | Best for |
 |---|---|---|---|---|
-| **Kaggle** | P100 / T4 | 30h/week | No (Save & Run All) | Recommended |
+| **Kaggle** | P100 | 30h/week | No (Save & Run All) | Recommended |
 | **Colab** | T4 | ~12h/session | Yes | Quick tests |
 | **Vast.ai** | RTX 3090+ | Paid (~$0.20/hr) | No (tmux) | Full production run |
 
@@ -17,8 +17,9 @@ Kaggle's **Save & Run All** runs your notebook to completion in a background wor
 ### Setup
 
 1. Go to [kaggle.com/code](https://kaggle.com/code) → **New Notebook**
-2. **Settings** (right panel) → Accelerator → **GPU T4 x2** or **GPU P100**
-3. **Settings** → Internet → **On**
+2. **Settings** (right panel) → Accelerator → **GPU P100** (not T4 x2 — our code is single-GPU only; the second T4 would be wasted)
+3. **Settings** → Persistence → **Files only** (persists `/kaggle/working/` between sessions; variables are lost on completion anyway)
+4. **Settings** → Internet → **On**
 
 ### Cell 1 — Clone and Install
 
