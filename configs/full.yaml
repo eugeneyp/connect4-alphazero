@@ -4,7 +4,7 @@ model:
   input_planes: 3
 
 mcts:
-  num_simulations: 600
+  num_simulations: 400
   c_puct: 2.0
   dirichlet_alpha: 1.0
   dirichlet_epsilon: 0.25
@@ -13,13 +13,15 @@ mcts:
   temperature_low: 0.3
 
 training:
-  num_iterations: 25
-  self_play_games_per_iteration: 5000
+  num_iterations: 20
+  self_play_games_per_iteration: 2000
   training_epochs: 10
   batch_size: 1024
   learning_rate: 1.0e-3
   weight_decay: 1.0e-4
-  replay_buffer_max_size: 1000000
-  arena_num_games: 128
+  replay_buffer_max_size: 500000
+  arena_num_games: 64
+  arena_num_simulations: 200
   update_threshold: 0.55
   checkpoint_dir: checkpoints
+  mcts_batch_size: 32
