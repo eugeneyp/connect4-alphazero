@@ -137,9 +137,10 @@ class Coach:
                     candidate, best, cfg.arena_num_games, arena_mcts
                 )
                 total = wins + losses + draws
-                win_rate = wins / total if total > 0 else 0.0
+                decisive = wins + losses
+                win_rate = wins / decisive if decisive > 0 else 0.5
                 logger.info(
-                    "Arena result — wins: %d  losses: %d  draws: %d  win_rate: %.3f",
+                    "Arena result — wins: %d  losses: %d  draws: %d  win_rate: %.3f (decisive games only)",
                     wins,
                     losses,
                     draws,
