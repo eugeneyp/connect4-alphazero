@@ -795,22 +795,29 @@ test_evaluate_script_produces_results (integration)
 
 ---
 
-### Iteration 6: Training at Scale 🔄 IN PROGRESS (infrastructure done, training pending)
+### Iteration 6: Training at Scale 🔄 IN PROGRESS (infrastructure done, training in progress)
 
 **Goal:** Full training run producing a competitive agent.
 
 **Done:**
-- `configs/cloud.yaml` — practical Colab config (5b/128f, 300 sims, 2000 games/iter)
+- `configs/cloud.yaml` — pipeline validation config (5b/128f, 100 sims, 200 games/iter)
+- `configs/medium.yaml` — main training config (4b/64f, 200 sims, 800 games/iter, 12 iters)
+- `configs/parallel_test.yaml` — validates parallel self-play before GCP full run
 - `notebooks/analysis.ipynb` — training visualization (loss curves, arena win rate, value head diagnostic)
-- `CLOUD_TRAINING.md` — step-by-step guide for running training on Google Colab
+- `CLOUD_TRAINING.md` — cloud training guide (Kaggle, Colab, GCP, Vast.ai, parallelization)
+- Parallel self-play: `num_self_play_workers` config field; set >1 for GCP multi-core speedup
 
-**Pending (requires cloud GPU run):**
-- 15-25 iterations on cloud GPU using `configs/cloud.yaml` (Colab T4) or `configs/full.yaml` (Vast.ai)
-- Training logs with loss curves and arena results
-- Best model checkpoint (`checkpoints/best_model.pt`)
+**In Progress:**
+- `medium.yaml` run on Kaggle P100: 7/12 iterations complete, benchmarks improving steadily
+  - vs Random: 100%, vs Minimax(d=1): 100% by iter 6, vs Minimax(d=3): 37% and climbing
+- GCP full run planned after validating parallel self-play with `parallel_test.yaml`
 
-**Speed note:** `full.yaml` (600 sims × 5000 games) is too slow for free Colab (~10-15h/iter).
-Use `cloud.yaml` on Colab (~2-4h/iter) or `full.yaml` on Vast.ai RTX 3090 (~2-4h/iter).
+**Pending:**
+- Best model checkpoint (`checkpoints/best_model.pt`) from completed run
+- Evaluate with `scripts/evaluate.py` after download
+
+**Speed note:** `full.yaml` (600 sims × 5000 games) requires parallel self-play to be practical.
+With 6 workers on `n1-standard-8`: ~5-8h/iter → 25 iterations feasible on T4 (~$50 total).
 
 **Monitoring signals:**
 - Policy loss and value loss should both decrease steadily
@@ -820,14 +827,14 @@ Use `cloud.yaml` on Colab (~2-4h/iter) or `full.yaml` on Vast.ai RTX 3090 (~2-4h
 
 **Run training:**
 ```bash
-# Colab: see CLOUD_TRAINING.md for full setup (Drive symlink for persistence)
-python scripts/train.py --config configs/cloud.yaml
+# Kaggle/Colab: see CLOUD_TRAINING.md
+python scripts/train.py --config configs/medium.yaml
 
-# Vast.ai (full scale):
-python scripts/train.py --config configs/full.yaml
+# GCP with parallel self-play (n1-standard-8, 6 workers):
+python scripts/train.py --config configs/full.yaml  # add num_self_play_workers: 6 to yaml
 
 # Resume after disconnect:
-python scripts/train.py --config configs/cloud.yaml --resume checkpoints/checkpoint_iter_NNN.pt
+python scripts/train.py --config configs/medium.yaml --resume checkpoints/checkpoint_iter_NNN.pt
 ```
 
 ---
@@ -1080,7 +1087,7 @@ If JavaScript MCTS is too complex for timeline, use raw policy head (no search).
 - [ ] Bitboard game engine (O(1) win detection, O(1) legal moves)
 - [ ] Batch NN inference during MCTS (collect leaves → one forward pass)
 - [ ] Mixed-precision training (`torch.cuda.amp`) on GPU
-- [ ] Parallel self-play workers (`multiprocessing`)
+- [x] Parallel self-play workers (`multiprocessing`) — `num_self_play_workers` in TrainingConfig; set >1 in yaml to enable; `configs/parallel_test.yaml` for validation
 - [ ] ONNX export with dynamic quantization
 - [ ] NumPy vectorization in data processing
 - [ ] Profile before optimizing (`cProfile` or `py-spy`)

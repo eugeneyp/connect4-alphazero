@@ -161,11 +161,11 @@ GCP Compute Engine with a **Deep Learning VM** image (PyTorch + CUDA pre-install
 
 ### Recommended Instance
 
-| Use case | Machine type | GPU | Cost/hr |
-|---|---|---|---|
-| `medium.yaml` (10 iters) | `n1-standard-8` | 1× T4 | ~$0.35 |
-| `full.yaml` (25 iters) | `n1-standard-8` | 1× V100 | ~$1.10 |
-| Fast full run | `n1-standard-16` | 1× A100 | ~$2.93 |
+| Use case | Machine type | GPU | Workers | Cost/hr |
+|---|---|---|---|---|
+| `parallel_test.yaml` (2 iters) | `n1-standard-8` | 1× T4 | 4 | ~$0.35 |
+| `full.yaml` (25 iters) | `n1-standard-8` | 1× T4 | 6 | ~$0.35 (~$52 total) |
+| `full.yaml` faster | `n1-standard-8` | 1× V100 | 6 | ~$1.10 (~$100 total) |
 
 With $400 credit: a T4 instance runs for **1000+ hours**. A V100 runs for **360+ hours**. Either is more than enough.
 
@@ -205,6 +205,10 @@ mkdir -p logs
 
 # Run in tmux (survives SSH disconnect)
 tmux new -s train
+# First: validate parallel self-play works (2 iterations, ~1h)
+python scripts/train.py --config configs/parallel_test.yaml 2>&1 | tee logs/parallel_test.log
+# Then: full production run with 6 workers
+# Add num_self_play_workers: 6 to configs/full.yaml, then:
 python scripts/train.py --config configs/full.yaml 2>&1 | tee logs/training.log
 # Ctrl+B then D to detach; tmux attach -t train to reattach
 ```
@@ -281,15 +285,28 @@ Self-play dominates (~85% of each iteration). The GPU is underutilized because M
 | Arena | ~10 min | Partially |
 | Benchmark | ~8 min | Partially |
 
-### Option 1 — Parallel Self-Play Workers (High Impact, Requires Code Change)
+### Option 1 — Parallel Self-Play Workers (High Impact, Implemented ✅)
 
-The biggest speedup: run N games simultaneously using Python `multiprocessing`. Each worker process plays one game independently. With 4–8 workers on a multi-core instance, self-play becomes 4–8× faster.
+Run N games simultaneously using Python `multiprocessing`. Each worker process plays games independently using a CPU copy of the model. With 4–8 workers on a multi-core instance, self-play becomes 4–8× faster overall.
 
-**Tradeoff:** Each worker needs its own model copy. On CPU this is fine (model is only 6MB). On GPU, workers share CUDA context which requires `torch.multiprocessing` with `spawn` start method.
+**How it works:** Workers use CPU-only inference. The GPU stays exclusively available to the main process for the training step. Even with CPU inference, parallel games outperform serial GPU games because Python overhead (not GPU compute) is the bottleneck at batch size 1.
 
-**Practical approach for GCP:** Use an 8-core instance (`n1-standard-8`), run 4 CPU workers for self-play, and keep the GPU exclusively for the training step. Even with CPU inference, 4 parallel games typically beats 1 GPU game because Python overhead (not GPU compute) is the bottleneck at batch size 1.
+**How to enable:** Add `num_self_play_workers` to any config's `training:` section:
 
-This is listed in the project's performance optimization checklist (`CLAUDE.md` §14) and is the next planned optimization.
+```yaml
+training:
+  num_self_play_workers: 6  # for n1-standard-8 (8 vCPUs, leave 2 for main + OS)
+```
+
+The default is `1` (serial, unchanged behavior). All existing configs work as before.
+
+**Validate before a long run** using `configs/parallel_test.yaml` (medium architecture, 2 iterations, 4 workers):
+
+```bash
+python scripts/train.py --config configs/parallel_test.yaml
+```
+
+Look for the `Self-play done: ... games/min` log line and compare to the serial baseline (~8–9 games/min on Kaggle P100). Target: 25–35 games/min with 4 workers on GCP `n1-standard-8`.
 
 ### Option 2 — Batched MCTS Inference (High Impact, Complex)
 
@@ -305,11 +322,11 @@ Speedup: 5–10× GPU throughput. Complexity: significant refactor of `src/mcts/
 
 | Optimization | Speedup | Effort | Status |
 |---|---|---|---|
-| Parallel self-play workers | 4–8× | Medium | Planned |
+| Parallel self-play workers | 4–8× | Medium | **Done ✅** |
 | Batched MCTS inference | 5–10× | High | Future |
 | Multi-GPU DataParallel | ~1.1× | Low | Not worth it |
 
-For now, the most practical path with $400 GCP credit is to run `full.yaml` on a single V100 (fast enough as-is) and implement parallel self-play workers as the next code improvement.
+With parallel self-play implemented, the recommended GCP path is: `n1-standard-8` + T4 with `num_self_play_workers: 6`. This brings `full.yaml` from ~31h/iter to ~5–8h/iter, making the full 25-iteration run feasible in ~150h (~$52 on T4).
 
 ---
 
@@ -363,10 +380,11 @@ python scripts/kaggle_submit.py \
 
 ## Config Reference
 
-| Config | Model | Sims | Games/iter | Time/iter (P100) | Use |
-|---|---|---|---|---|---|
-| `tiny.yaml` | 2b/32f | 50 | 100 | ~5 min | Local unit tests |
-| `cloud.yaml` | 5b/128f | 100 | 200 | ~20 min | Pipeline validation |
-| `medium.yaml` | 4b/64f | 200 | 800 | ~100 min | **Kaggle/Colab training run** |
-| `small.yaml` | 3b/64f | 200 | 1000 | ~1-2h | Alternative medium run |
-| `full.yaml` | 5b/128f | 600 | 5000 | ~2-4h | Vast.ai production run |
+| Config | Model | Sims | Games/iter | Workers | Time/iter | Use |
+|---|---|---|---|---|---|---|
+| `tiny.yaml` | 2b/32f | 50 | 100 | 1 | ~5 min | Local unit tests |
+| `cloud.yaml` | 5b/128f | 100 | 200 | 1 | ~20 min | Pipeline validation |
+| `medium.yaml` | 4b/64f | 200 | 800 | 1 | ~100 min (P100) | **Kaggle/Colab training run** |
+| `parallel_test.yaml` | 4b/64f | 200 | 800 | 4 | ~25–40 min (GCP T4) | Validate parallel self-play |
+| `small.yaml` | 3b/64f | 200 | 1000 | 1 | ~1-2h | Alternative medium run |
+| `full.yaml` + 6 workers | 5b/128f | 600 | 5000 | 6 | ~5–8h (GCP T4) | GCP production run |
