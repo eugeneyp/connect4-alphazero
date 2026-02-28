@@ -65,6 +65,15 @@ def main() -> None:
         coach._model.load_state_dict(checkpoint["model_state_dict"])
         logging.info("Loaded model weights from %s", args.resume)
 
+        # Ensure best_model.pt exists so the arena has a baseline to compare
+        # against. Without this, the first resumed iteration auto-accepts the
+        # candidate unconditionally (the "no previous best" branch).
+        import shutil
+        best_path = coach._best_checkpoint_path
+        if not best_path.exists():
+            shutil.copy(args.resume, best_path)
+            logging.info("Copied resume checkpoint to %s as best model baseline", best_path)
+
     coach.train(start_iteration=start_iteration)
 
 
