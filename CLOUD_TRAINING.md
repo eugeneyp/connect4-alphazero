@@ -59,12 +59,22 @@ When the session times out, Kaggle saves everything in `/kaggle/working/` as the
 - Open the notebook → **Add data** → search for your dataset → add it
 - It will appear at `/kaggle/input/connect4-checkpoints/`
 
-**Step 3 — Replace Cell 2 with the resume cell:**
+**Step 3 — Find the exact dataset path (run once):**
+
+```python
+import os
+for entry in os.listdir('/kaggle/input'):
+    print(entry)
+```
+
+The path format is `/kaggle/input/datasets/<username>/<dataset-slug>/connect4-alphazero/checkpoints/`.
+
+**Step 4 — Replace Cell 2 with the resume cell:**
 
 ```python
 import glob
 
-checkpoints = sorted(glob.glob('/kaggle/input/connect4-checkpoints/checkpoints/checkpoint_iter_*.pt'))
+checkpoints = sorted(glob.glob('/kaggle/input/datasets/YOUR_USERNAME/connect4-checkpoints/connect4-alphazero/checkpoints/checkpoint_iter_*.pt'))
 latest = checkpoints[-1]
 print(f"Resuming from: {latest}")
 
