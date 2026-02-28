@@ -11,6 +11,7 @@ import math
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from src.game.board import Connect4Board
 from src.game.constants import COLS
@@ -323,3 +324,170 @@ def select_move(visit_counts: np.ndarray, temperature: float) -> int:
     total = adjusted.sum()
     probs = adjusted / total
     return int(np.random.choice(len(probs), p=probs))
+
+
+def _visit_distribution(root: MCTSNode, board: Connect4Board) -> np.ndarray:
+    """Extract a normalised visit-count distribution from a searched root node.
+
+    Args:
+        root: The root node after MCTS search.
+        board: The board at the root (used as fallback for legal moves).
+
+    Returns:
+        A (7,) float32 array of visit-count probabilities, summing to 1.0.
+    """
+    visit_array = np.zeros(COLS, dtype=np.float32)
+    for action, child in root.children.items():
+        visit_array[action] = child.visit_count
+
+    total = visit_array.sum()
+    if total == 0:
+        legal = board.get_legal_moves()
+        visit_array[legal] = 1.0
+        total = len(legal)
+
+    return visit_array / total
+
+
+class BatchedMCTS(MCTS):
+    """MCTS variant that processes multiple trees in lock-step for GPU efficiency.
+
+    Instead of one forward pass per simulation, `search_batch` advances M MCTS
+    trees together and collects all leaf evaluations into a single batched
+    GPU forward pass per simulation step. This keeps GPU utilisation high
+    (batch size M instead of 1) and is the recommended approach for training
+    with large models on a GPU.
+
+    This class is additive — all existing MCTS tests and the base `MCTS` class
+    are unchanged.
+
+    Args:
+        model: Trained Connect4Net. Should be on the target GPU/CPU device.
+        config: MCTS hyperparameters.
+        batch_size: Number of MCTS trees to advance in parallel (M). Larger
+            values improve GPU utilisation but use more memory.
+    """
+
+    def __init__(self, model: Connect4Net, config: MCTSConfig, batch_size: int = 32) -> None:
+        """Initialise batched MCTS.
+
+        Args:
+            model: Neural network for evaluating positions.
+            config: MCTS hyperparameters.
+            batch_size: Number of parallel game trees.
+        """
+        super().__init__(model, config)
+        self._batch_size = batch_size
+        self._device = next(model.parameters()).device
+
+    def search_batch(
+        self, boards: list[Connect4Board], add_dirichlet_noise: bool = False
+    ) -> list[np.ndarray]:
+        """Run batched MCTS across multiple board positions simultaneously.
+
+        All M trees advance one simulation step together. Leaf evaluations are
+        batched into a single GPU forward pass per step.
+
+        Args:
+            boards: List of board positions to search from. Must all be
+                non-terminal.
+            add_dirichlet_noise: If True, add Dirichlet noise to root priors
+                for training exploration.
+
+        Returns:
+            List of (7,) float32 visit-count probability arrays, one per board,
+            in the same order as the input list.
+        """
+        if not boards:
+            return []
+
+        roots = [MCTSNode(board=b) for b in boards]
+
+        # Initial expansion of all roots (one batched NN call)
+        self._batch_expand_and_evaluate(roots, add_noise=add_dirichlet_noise)
+
+        for _ in range(self.config.num_simulations):
+            # Phase 1: CPU traversal — select a leaf from each tree
+            leaves = [self._select(root) for root in roots]
+            # Phase 2: single GPU call — expand all leaves together
+            values = self._batch_expand_and_evaluate(leaves)
+            # Phase 3: CPU backup
+            for leaf in leaves:
+                self._backup(leaf, values[id(leaf)])
+
+        return [_visit_distribution(root, board) for root, board in zip(roots, boards)]
+
+    def _batch_expand_and_evaluate(
+        self, nodes: list[MCTSNode], add_noise: bool = False
+    ) -> dict[int, float]:
+        """Expand a batch of leaf nodes, evaluating them with one GPU call.
+
+        Terminal nodes are evaluated with exact game results (no NN needed).
+        Already-expanded nodes return 0.0 (safety guard).
+        Remaining leaf nodes are evaluated in a single batched forward pass.
+
+        Args:
+            nodes: Nodes to expand/evaluate.
+            add_noise: If True, add Dirichlet noise to the root prior of each
+                newly expanded node (used during self-play training).
+
+        Returns:
+            Dict mapping ``id(node)`` → value (float) for every node in
+            ``nodes``.  Values are from each node's current player's perspective.
+        """
+        result: dict[int, float] = {}
+        to_eval: list[MCTSNode] = []
+        legal_masks: list[np.ndarray] = []
+
+        for node in nodes:
+            if node.is_terminal:
+                winner = node.board.get_winner()
+                if winner is None:
+                    result[id(node)] = 0.0
+                else:
+                    result[id(node)] = node.board.get_result(node.board.current_player)
+            elif not node.is_leaf:
+                # Already expanded (can happen on root re-entry)
+                result[id(node)] = 0.0
+            else:
+                legal_mask = self._build_legal_moves_mask(node.board)
+                to_eval.append(node)
+                legal_masks.append(legal_mask)
+
+        if to_eval:
+            # Stack all boards into one tensor — use .tolist() for NumPy bridge
+            states = np.stack([n.board.encode() for n in to_eval])
+            batch_tensor = torch.tensor(
+                states.tolist(), dtype=torch.float32
+            ).to(self._device)
+
+            with torch.no_grad():
+                policy_logits_batch, value_batch = self.model(batch_tensor)  # (K,7), (K,1)
+
+            for i, node in enumerate(to_eval):
+                logits = policy_logits_batch[i].clone()
+                mask = legal_masks[i]
+                mask_tensor = torch.tensor(mask.tolist(), dtype=torch.bool, device=logits.device)
+                logits[~mask_tensor] = float("-inf")
+                policy = F.softmax(logits, dim=-1)
+                policy_np = np.array(policy.tolist(), dtype=np.float32)
+
+                value_scalar = float(value_batch[i].item())
+
+                legal_moves = node.board.get_legal_moves()
+                for action in legal_moves:
+                    child_board = node.board.make_move(action)
+                    prior = float(policy_np[action])
+                    node.children[action] = MCTSNode(
+                        board=child_board,
+                        parent=node,
+                        action=action,
+                        prior=prior,
+                    )
+
+                if add_noise:
+                    self._add_dirichlet_noise(node)
+
+                result[id(node)] = value_scalar
+
+        return result

@@ -24,7 +24,7 @@ from src.mcts.search import MCTS, select_move
 from src.neural_net.model import Connect4Net
 from src.training.arena import pit
 from src.training.replay_buffer import ReplayBuffer
-from src.training.self_play import SelfPlay
+from src.training.self_play import BatchedSelfPlay, SelfPlay
 from src.training.trainer import Trainer
 from src.utils.config import Config, MCTSConfig
 
@@ -81,12 +81,19 @@ class Coach:
             # 1. Self-play: generate games and fill the replay buffer
             # ----------------------------------------------------------------
             model.eval()
-            self_play = SelfPlay(
-                model,
-                self._config.mcts,
-                num_workers=cfg.num_self_play_workers,
-                model_config=self._config.model,
-            )
+            if cfg.mcts_batch_size > 1:
+                self_play = BatchedSelfPlay(
+                    model,
+                    self._config.mcts,
+                    batch_size=cfg.mcts_batch_size,
+                )
+            else:
+                self_play = SelfPlay(
+                    model,
+                    self._config.mcts,
+                    num_workers=cfg.num_self_play_workers,
+                    model_config=self._config.model,
+                )
             logger.info(
                 "Self-play: generating %d games...", cfg.self_play_games_per_iteration
             )

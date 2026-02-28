@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from src.game.board import Connect4Board
-from src.mcts.search import MCTS, MCTSNode, select_move
+from src.mcts.search import MCTS, BatchedMCTS, MCTSNode, select_move
 from src.utils.config import MCTSConfig
 
 
@@ -531,3 +531,69 @@ class TestDirichletNoise:
         assert result.shape == (7,)
         assert result.sum() == pytest.approx(1.0, abs=1e-5)
         assert (result >= 0).all()
+
+
+# ---------------------------------------------------------------------------
+# TestBatchedMCTS
+# ---------------------------------------------------------------------------
+
+class TestBatchedMCTS:
+    """Tests for the BatchedMCTS class."""
+
+    def _make_batched_mcts(self, model, num_simulations: int = 50, batch_size: int = 4) -> BatchedMCTS:
+        config = MCTSConfig(num_simulations=num_simulations)
+        return BatchedMCTS(model, config, batch_size=batch_size)
+
+    def test_search_batch_returns_correct_count(self, tiny_model, empty_board):
+        """search_batch returns one distribution per input board."""
+        boards = [empty_board, empty_board.make_move(3)]
+        mcts = self._make_batched_mcts(tiny_model)
+        results = mcts.search_batch(boards)
+        assert len(results) == len(boards)
+
+    def test_search_batch_distributions_sum_to_one(self, tiny_model):
+        """Each returned distribution sums to 1.0."""
+        board1 = Connect4Board()
+        board2 = board1.make_move(3)
+        board3 = board2.make_move(2)
+        boards = [board1, board2, board3]
+        mcts = self._make_batched_mcts(tiny_model)
+        results = mcts.search_batch(boards)
+        for dist in results:
+            assert dist.sum() == pytest.approx(1.0, abs=1e-5)
+
+    def test_search_batch_zeros_illegal_moves(self, tiny_model):
+        """Illegal columns (full columns) have probability 0 in the output."""
+        # Fill column 0 by playing 6 pieces in it (alternating players)
+        board = Connect4Board()
+        for _ in range(3):
+            board = board.make_move(0).make_move(0)  # P1 then P2 in col 0
+        # Col 0 is now full (6 pieces)
+        assert 0 not in board.get_legal_moves()
+        mcts = self._make_batched_mcts(tiny_model)
+        results = mcts.search_batch([board])
+        assert results[0][0] == pytest.approx(0.0, abs=1e-6)
+
+    def test_search_batch_finds_winning_move(self, tiny_model):
+        """When one board has an immediate winning move, batch search finds it."""
+        # P1 has pieces in cols 0, 1, 2 — col 3 wins horizontally
+        board = _make_board([0, 6, 1, 6, 2, 6])
+        mcts = self._make_batched_mcts(tiny_model, num_simulations=200, batch_size=2)
+        results = mcts.search_batch([board])
+        dist = results[0]
+        best_move = int(np.argmax(dist))
+        assert best_move == 3, f"Expected winning move col 3, got col {best_move} (dist={dist})"
+
+    def test_batch_expand_handles_terminal_nodes(self, tiny_model):
+        """Terminal nodes return exact game results without a NN call."""
+        # P1 wins: [0, 1, 0, 1, 0, 1, 0] → col 0 four in a row
+        terminal_board = _make_board([0, 1, 0, 1, 0, 1, 0])
+        assert terminal_board.is_terminal()
+
+        mcts = self._make_batched_mcts(tiny_model)
+        terminal_node = MCTSNode(board=terminal_board)
+        values = mcts._batch_expand_and_evaluate([terminal_node])
+        # Terminal node must be handled without raising and return a valid value
+        assert id(terminal_node) in values
+        val = values[id(terminal_node)]
+        assert val in (-1.0, 0.0, 1.0)

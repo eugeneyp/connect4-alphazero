@@ -53,6 +53,7 @@ class TrainingConfig:
     update_threshold: float = 0.55
     checkpoint_dir: str = "checkpoints"
     num_self_play_workers: int = 1  # >1 enables parallel self-play via multiprocessing
+    mcts_batch_size: int = 1  # >1 enables BatchedSelfPlay (GPU batch inference); mutually exclusive with num_self_play_workers > 1
 
 
 @dataclass

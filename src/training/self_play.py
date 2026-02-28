@@ -12,6 +12,7 @@ exclusively available to the main process for the training step.
 import concurrent.futures
 import logging
 import time
+from dataclasses import dataclass, field
 
 import numpy as np
 import torch.multiprocessing as mp
@@ -19,7 +20,7 @@ from tqdm import tqdm
 
 from src.game.board import Connect4Board
 from src.game.constants import COLS
-from src.mcts.search import MCTS, select_move
+from src.mcts.search import MCTS, BatchedMCTS, select_move
 from src.neural_net.model import Connect4Net
 from src.training.replay_buffer import TrainingSample
 from src.utils.config import MCTSConfig, ModelConfig
@@ -264,3 +265,158 @@ class SelfPlay:
             n, elapsed / 60, n / elapsed * 60,
         )
         return all_samples
+
+
+# ---------------------------------------------------------------------------
+# Batched self-play (GPU-efficient: one NN call per simulation step across M games)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _ActiveGame:
+    """State of one in-progress self-play game within a batched run."""
+
+    board: Connect4Board
+    history: list = field(default_factory=list)  # list of (state, visits, player)
+    move_number: int = 0
+
+
+class BatchedSelfPlay:
+    """Self-play that runs M games in lock-step for high GPU utilisation.
+
+    Standard MCTS calls the neural network once per simulation (batch size 1).
+    This class instead advances M MCTS trees one simulation step at a time,
+    batching all leaf evaluations into a single forward pass (batch size M).
+    GPU utilisation jumps from ~5% to ~80%+ on large models.
+
+    Use this instead of (not alongside) ``SelfPlay`` with parallel workers when
+    a GPU is available. The two approaches are mutually exclusive:
+    ``mcts_batch_size > 1`` → ``BatchedSelfPlay``; ``num_self_play_workers > 1``
+    → parallel-worker ``SelfPlay``.
+
+    Args:
+        model: Neural network used to guide MCTS. Should be in eval mode.
+        mcts_config: MCTS hyperparameters.
+        batch_size: Number of simultaneous game trees (M). Larger values give
+            better GPU utilisation at the cost of more memory. 32–64 is a
+            good starting point for a T4/V100 with the ``full`` model.
+    """
+
+    def __init__(
+        self,
+        model: Connect4Net,
+        mcts_config: MCTSConfig,
+        batch_size: int = 32,
+    ) -> None:
+        """Initialise batched self-play.
+
+        Args:
+            model: Neural network for position evaluation.
+            mcts_config: MCTS hyperparameters.
+            batch_size: Number of concurrent game trees.
+        """
+        self._model = model
+        self._mcts = BatchedMCTS(model, mcts_config, batch_size=batch_size)
+        self._config = mcts_config
+        self._batch_size = batch_size
+
+    def generate_games(self, n: int) -> list[TrainingSample]:
+        """Play n self-play games using batched GPU inference.
+
+        Games are run in slots of up to ``batch_size`` simultaneously. When a
+        game finishes, a new game starts in that slot (keeping slots full until
+        fewer than ``batch_size`` games remain). Each game produces two samples
+        per move (original + horizontal flip).
+
+        Args:
+            n: Total number of complete games to play.
+
+        Returns:
+            Flat list of TrainingSample objects from all games.
+        """
+        logger = logging.getLogger(__name__)
+        all_samples: list[TrainingSample] = []
+        start = time.time()
+
+        initial_slots = min(self._batch_size, n)
+        active: list[_ActiveGame] = [_ActiveGame(board=Connect4Board()) for _ in range(initial_slots)]
+        games_started = initial_slots
+        games_finished = 0
+
+        while games_finished < n:
+            boards = [g.board for g in active]
+            visit_distributions = self._mcts.search_batch(boards, add_dirichlet_noise=True)
+
+            new_active: list[_ActiveGame] = []
+            for game, visits in zip(active, visit_distributions):
+                temp = (
+                    self._config.temperature_high
+                    if game.move_number < self._config.temperature_threshold
+                    else self._config.temperature_low
+                )
+                game.history.append((game.board.encode(), visits, game.board.current_player))
+                col = select_move(visits, temp)
+                game.board = game.board.make_move(col)
+                game.move_number += 1
+
+                if game.board.is_terminal():
+                    all_samples.extend(self._finalize_game(game))
+                    games_finished += 1
+
+                    if (games_finished % 50) == 0:
+                        elapsed = time.time() - start
+                        rate = games_finished / elapsed * 60 if elapsed > 0 else 0
+                        remaining_games = n - games_finished
+                        eta_min = remaining_games / (games_finished / elapsed) / 60 if elapsed > 0 else 0
+                        logger.info(
+                            "Self-play: %d/%d games  %.2f games/min  ETA %.0f min",
+                            games_finished, n, rate, eta_min,
+                        )
+
+                    if games_started < n:
+                        new_active.append(_ActiveGame(board=Connect4Board()))
+                        games_started += 1
+                    # else: slot is retired — batch naturally shrinks toward end
+                else:
+                    new_active.append(game)
+
+            active = new_active
+
+        elapsed = time.time() - start
+        logger.info(
+            "Self-play done: %d games in %.1f min (%.2f games/min)",
+            n, elapsed / 60, n / elapsed * 60 if elapsed > 0 else 0,
+        )
+        return all_samples
+
+    def _finalize_game(self, game: _ActiveGame) -> list[TrainingSample]:
+        """Convert a completed game's history into TrainingSample objects.
+
+        Applies horizontal flip augmentation to double the dataset.
+
+        Args:
+            game: A completed _ActiveGame with a terminal board.
+
+        Returns:
+            List of TrainingSample (2 per position: original + flipped).
+        """
+        winner = game.board.get_winner()  # None = draw
+        samples: list[TrainingSample] = []
+        flip_indices = np.arange(COLS - 1, -1, -1)  # [6,5,4,3,2,1,0]
+
+        for state, policy, player in game.history:
+            if winner is None:
+                value = 0.0
+            elif player == winner:
+                value = 1.0
+            else:
+                value = -1.0
+
+            samples.append(TrainingSample(state=state, policy=policy, value=value))
+
+            flipped_state = np.flip(state, axis=2).copy()
+            flipped_policy = policy[flip_indices]
+            samples.append(
+                TrainingSample(state=flipped_state, policy=flipped_policy, value=value)
+            )
+
+        return samples
