@@ -203,6 +203,7 @@ class Coach:
             ("Random", RandomAgent()),
             ("Minimax(d=1)", MinimaxAgent(max_depth=1)),
             ("Minimax(d=3)", MinimaxAgent(max_depth=3)),
+            ("Minimax(d=5)", MinimaxAgent(max_depth=5)),
         ]
 
         for opp_name, opp in opponents:
