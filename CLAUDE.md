@@ -463,7 +463,8 @@ connect4-rl/
 │   ├── game.js                  # Game logic + UI controller
 │   └── ai_worker.js             # Web Worker for ONNX inference
 ├── notebooks/
-│   └── analysis.ipynb           # Training visualization
+│   ├── analysis.ipynb           # Training visualization
+│   └── kaggle_local_test.ipynb  # Local submission testing (kaggle-environments==0.1.6)
 ├── configs/
 │   ├── tiny.yaml                # 2 blocks, 32 filters (testing)
 │   ├── small.yaml               # 3 blocks, 64 filters (quick runs)
@@ -926,7 +927,9 @@ pytest tests/ -k "test_mcts" -v                          # By keyword
 
 ### Kaggle Submission Workflow (WORKING)
 
-The Connect-X simulation sandbox only has numpy — no onnxruntime, no torch. The correct submission format is a **tar.gz archive** containing `main.py` (pure numpy ResNet + MCTS) and `weights.npz` (extracted from the checkpoint).
+The correct submission format is a **tar.gz archive** containing `main.py` (pure numpy ResNet + MCTS) and `weights.npz` (extracted from the checkpoint).
+
+**Available in the Connect-X sandbox:** numpy ✅, torch ✅ (CPU-only; see [discussion](https://www.kaggle.com/c/connectx/discussion/125322)), onnxruntime ❌.
 
 ```bash
 # 1. Build the submission archive
@@ -953,7 +956,8 @@ python scripts/kaggle_submit.py \
 **Why tar.gz:**
 - Kaggle does NOT extract zip archives for Connect-X — it treats the raw bytes as Python (SyntaxError on `PK` magic bytes)
 - Kaggle DOES extract tar.gz to `/kaggle_simulations/agent/`; both `main.py` and `weights.npz` land there
-- onnxruntime is not installed in the Connect-X sandbox; pure numpy is the only option
+- onnxruntime is not installed in the Connect-X sandbox
+- torch IS available (CPU-only) but numpy inference avoids version mismatch risk and keeps the archive small (~1.4 MB vs ~50 MB with a bundled .pt checkpoint)
 
 ### ONNX Export (local benchmarking only)
 
