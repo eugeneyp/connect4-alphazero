@@ -13,7 +13,7 @@ mcts:
   temperature_low: 0.3
 
 training:
-  num_iterations: 10
+  num_iterations: 12
   self_play_games_per_iteration: 800
   training_epochs: 8
   batch_size: 512
