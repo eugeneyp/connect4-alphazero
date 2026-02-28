@@ -445,7 +445,8 @@ connect4-rl/
 │   ├── export/                  # Deployment
 │   │   ├── __init__.py
 │   │   ├── onnx_export.py       # PyTorch → ONNX conversion
-│   │   └── kaggle_agent.py      # Self-contained Kaggle submission
+│   │   ├── kaggle_agent.py      # onnxruntime-based agent (local testing only)
+│   │   └── kaggle_agent_numpy.py  # Pure numpy agent (actual Kaggle submission)
 │   └── utils/
 │       ├── __init__.py
 │       └── config.py            # Dataclass-based configuration
@@ -923,79 +924,72 @@ pytest tests/ -k "test_mcts" -v                          # By keyword
 
 ## 11. ONNX Export & Kaggle Integration
 
-### ONNX Export
+### Kaggle Submission Workflow (WORKING)
 
-```python
-dummy_input = torch.randn(1, 3, 6, 7)
-torch.onnx.export(
-    model, dummy_input, "model.onnx",
-    opset_version=11,
-    input_names=["board_state"],
-    output_names=["policy_logits", "value"],
-    dynamic_axes={"board_state": {0: "batch_size"}}
-)
+The Connect-X simulation sandbox only has numpy — no onnxruntime, no torch. The correct submission format is a **tar.gz archive** containing `main.py` (pure numpy ResNet + MCTS) and `weights.npz` (extracted from the checkpoint).
 
-# Quantize for size/speed
-from onnxruntime.quantization import quantize_dynamic, QuantType
-quantize_dynamic("model.onnx", "model_quantized.onnx", weight_type=QuantType.QUInt8)
+```bash
+# 1. Build the submission archive
+python scripts/kaggle_submit.py \
+    --checkpoint checkpoints/best_model.pt \
+    --output submission/ \
+    --tar
+
+# Optionally tune MCTS sims (default 200, budget allows ~400 max)
+python scripts/kaggle_submit.py \
+    --checkpoint checkpoints/best_model.pt \
+    --output submission/ \
+    --tar --num-sims 400
+
+# 2. Test locally (open notebooks/kaggle_local_test.ipynb — auto-detects submission.tar.gz)
+
+# 3. Upload submission/submission.tar.gz to Kaggle → Submit Predictions
 ```
 
-Target: ~6MB unquantized → ~2MB quantized.
+**What the archive contains:**
+- `main.py` — `src/export/kaggle_agent_numpy.py` with `_NUM_MCTS_SIMS` baked in
+- `weights.npz` — model weights from the checkpoint (~1.4 MB compressed)
 
-### Kaggle Submission Format
+**Why tar.gz:**
+- Kaggle does NOT extract zip archives for Connect-X — it treats the raw bytes as Python (SyntaxError on `PK` magic bytes)
+- Kaggle DOES extract tar.gz to `/kaggle_simulations/agent/`; both `main.py` and `weights.npz` land there
+- onnxruntime is not installed in the Connect-X sandbox; pure numpy is the only option
 
-Single self-contained Python file with signature:
+### ONNX Export (local benchmarking only)
+
+```bash
+python scripts/export_onnx.py --checkpoint checkpoints/best_model.pt --output model.onnx
+```
+
+Used by `scripts/benchmark_mcts.py` for speed measurements. **Not used in the actual Kaggle submission.**
+
+### Agent Signature
+
 ```python
-def my_agent(observation, configuration):
-    # observation.board → flat list of 42 ints (0=empty, 1=P1, 2=P2)
+def my_agent(observation, configuration) -> int:
+    # observation.board → flat list of 42 ints (0=empty, 1=P1, 2=P2), row 0 = TOP
     # observation.mark → your player number (1 or 2)
-    # configuration.columns=7, configuration.rows=6, configuration.inarow=4
     return column_index  # int 0-6
 ```
 
-Model uploaded as Kaggle Dataset, loaded via `/kaggle/input/my-dataset/model.onnx`. Cache session in global variable.
+**Critical board encoding note:** Kaggle row 0 = TOP, but the network was trained with row 0 = BOTTOM (gravity side). Always apply `network_row = (ROWS - 1) - kaggle_row` when encoding.
 
 ### Time Constraints
 
 - **2 seconds per move** + 60-second shared overage bank
-- **10 seconds first call** (model loading)
-- Use ONNX quantized inference, 100-200 MCTS sims, overage bank on critical openings
+- Pure numpy inference (200 sims): ~0.6s/move → well within budget
+- Full model (5b/128f, 400 sims): ~388 sims/2s → safely fits
+- First call loads `weights.npz` (~0.1s extra); negligible
 
-### Kaggle Agent Template
+### Speed Benchmark Results (MacBook, single core)
 
-```python
-import numpy as np
-import onnxruntime as ort
+| Model | ONNX ms/call | Sims/2s | Verdict |
+|---|---|---|---|
+| tiny (2b/32f) | 0.23 ms | ~1855 | GO |
+| small (3b/64f) | 0.54 ms | ~1580 | GO |
+| full (5b/128f) | 3.26 ms | ~388 | GO |
 
-_session = None
-
-def _initialize():
-    global _session
-    _session = ort.InferenceSession('/kaggle/input/my-dataset/model.onnx')
-
-def _encode_board(board_list, mark):
-    board = np.array(board_list).reshape(6, 7)
-    state = np.zeros((1, 3, 6, 7), dtype=np.float32)
-    state[0, 0] = (board == mark).astype(np.float32)
-    state[0, 1] = (board == (3 - mark)).astype(np.float32)
-    state[0, 2] = 1.0 if mark == 1 else 0.0
-    return state
-
-def _get_legal_moves(board_list, cols=7):
-    return [c for c in range(cols) if board_list[c] == 0]
-
-def my_agent(observation, configuration):
-    global _session
-    if _session is None:
-        _initialize()
-    state = _encode_board(observation.board, observation.mark)
-    policy_logits, value = _session.run(None, {"board_state": state})
-    legal_moves = _get_legal_moves(observation.board)
-    masked = np.full(7, -1e9)
-    for m in legal_moves:
-        masked[m] = policy_logits[0][m]
-    return int(np.argmax(masked))
-```
+Run benchmark: `python scripts/benchmark_mcts.py --models tiny small full --sims 400`
 
 ### Competitive Benchmarks
 
@@ -1197,7 +1191,8 @@ python scripts/train.py --config configs/tiny.yaml       # Train (local)
 python scripts/train.py --config configs/full.yaml       # Train (GPU)
 python scripts/evaluate.py --checkpoint checkpoints/best_model.pt --num-games 100
 python scripts/export_onnx.py --checkpoint checkpoints/best_model.pt --output model.onnx
-python scripts/kaggle_submit.py --model model.onnx --output submission/
+python scripts/kaggle_submit.py --checkpoint checkpoints/best_model.pt --output submission/ --tar  # build submission.tar.gz
+python scripts/benchmark_mcts.py --models tiny small full --sims 400                               # speed check
 ```
 
 ### Git Practices
