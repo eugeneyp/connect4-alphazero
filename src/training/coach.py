@@ -81,7 +81,12 @@ class Coach:
             # 1. Self-play: generate games and fill the replay buffer
             # ----------------------------------------------------------------
             model.eval()
-            self_play = SelfPlay(model, self._config.mcts)
+            self_play = SelfPlay(
+                model,
+                self._config.mcts,
+                num_workers=cfg.num_self_play_workers,
+                model_config=self._config.model,
+            )
             logger.info(
                 "Self-play: generating %d games...", cfg.self_play_games_per_iteration
             )

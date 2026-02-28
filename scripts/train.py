@@ -69,4 +69,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Must be set before any ProcessPoolExecutor is created.
+    # 'spawn' is required for PyTorch (avoids CUDA context inheritance on Linux).
+    # force=True is safe on macOS where 'spawn' is already the default.
+    import torch.multiprocessing as mp
+    mp.set_start_method("spawn", force=True)
     main()

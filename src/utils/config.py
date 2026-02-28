@@ -52,6 +52,7 @@ class TrainingConfig:
     arena_num_simulations: int | None = None  # if None, uses mcts.num_simulations
     update_threshold: float = 0.55
     checkpoint_dir: str = "checkpoints"
+    num_self_play_workers: int = 1  # >1 enables parallel self-play via multiprocessing
 
 
 @dataclass
