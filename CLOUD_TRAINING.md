@@ -5,7 +5,7 @@ Training on cloud GPU. Choose your platform:
 | Platform | GPU | Cost | Session limit | Best for |
 |---|---|---|---|---|
 | **Kaggle** | P100 | Free (30h/week) | ~9h/run | Recommended for free runs |
-| **GCP** | T4 / V100 / A100 | ~$0.35–$3/hr | No limit | Best with $400 trial credit |
+| **GCP** | L4 / T4 / V100 | ~$0.54–$3/hr | No limit | Best with $400 trial credit |
 | **Colab** | T4 | Free (~12h/session) | ~12h | Quick tests |
 | **Vast.ai** | RTX 3090+ | ~$0.20/hr | No limit | Cheapest paid option |
 
@@ -27,15 +27,15 @@ Kaggle's **Save & Run All** runs your notebook to completion in a background wor
 ### Cell 1 — Clone and Install
 
 ```python
-!git clone https://github.com/eugenep/connect4-alphazero.git /kaggle/working/connect4-alphazero
-!pip install -e /kaggle/working/connect4-alphazero -q
+!git clone https://github.com/eugeneyp/connect4-alphazero.git /kaggle/working/connect4-alphazero
+!pip install /kaggle/working/connect4-alphazero -q
 ```
 
 ### Cell 2 — Train
 
 ```python
 %cd /kaggle/working/connect4-alphazero
-!python scripts/train.py --config configs/cloud.yaml \
+!python3 scripts/train.py --config configs/cloud.yaml \
   2>&1 | tee /kaggle/working/training.log
 ```
 
@@ -79,7 +79,7 @@ latest = checkpoints[-1]
 print(f"Resuming from: {latest}")
 
 %cd /kaggle/working/connect4-alphazero
-!python scripts/train.py --config configs/medium.yaml --resume {latest} \
+!python3 scripts/train.py --config configs/medium.yaml --resume {latest} \
   2>&1 | tee /kaggle/working/training.log
 ```
 
@@ -103,8 +103,8 @@ from google.colab import drive
 drive.mount('/content/drive')
 
 # Clone and install
-!git clone https://github.com/eugenep/connect4-alphazero.git /content/connect4-alphazero
-!pip install -e /content/connect4-alphazero -q
+!git clone https://github.com/eugeneyp/connect4-alphazero.git /content/connect4-alphazero
+!pip install /content/connect4-alphazero -q
 
 # Symlink checkpoints → Drive (survives disconnects)
 import os
@@ -120,7 +120,7 @@ print(os.path.islink(REPO_CKPT), '->', os.readlink(REPO_CKPT))
 
 ```python
 %cd /content/connect4-alphazero
-!python scripts/train.py --config configs/cloud.yaml \
+!python3 scripts/train.py --config configs/cloud.yaml \
   2>&1 | tee /content/drive/MyDrive/connect4-training.log
 ```
 
@@ -136,7 +136,7 @@ latest = checkpoints[-1]
 print(f"Resuming from: {latest}")
 
 %cd /content/connect4-alphazero
-!python scripts/train.py --config configs/cloud.yaml --resume {latest} \
+!python3 scripts/train.py --config configs/cloud.yaml --resume {latest} \
   2>&1 | tee -a /content/drive/MyDrive/connect4-training.log
 ```
 
@@ -161,87 +161,131 @@ GCP Compute Engine with a **Deep Learning VM** image (PyTorch + CUDA pre-install
 
 ### Recommended Instance
 
-| Use case | Machine type | GPU | Workers | Cost/hr |
-|---|---|---|---|---|
-| `parallel_test.yaml` (2 iters) | `n1-standard-8` | 1× T4 | 4 | ~$0.35 |
-| `full.yaml` (25 iters) | `n1-standard-8` | 1× T4 | 6 | ~$0.35 (~$52 total) |
-| `full.yaml` faster | `n1-standard-8` | 1× V100 | 6 | ~$1.10 (~$100 total) |
+| Use case | Machine type | GPU | mcts_batch_size | Cost/hr | Total cost |
+|---|---|---|---|---|---|
+| `batched_test.yaml` (2 iters, validation) | `g2-standard-4` | 1× L4 | 32 | ~$0.90 | < $1 |
+| `full.yaml` (20 iters, production) | `g2-standard-4` | 1× L4 | 32 | ~$0.90 | ~$36 |
 
-With $400 credit: a T4 instance runs for **1000+ hours**. A V100 runs for **360+ hours**. Either is more than enough.
+With $400 credit: an L4 instance runs for **400+ hours** — more than enough.
 
-### Create the VM
+### One-Time Setup
 
 ```bash
-# Install gcloud CLI if needed: https://cloud.google.com/sdk/docs/install
-# Then authenticate:
+# Install gcloud CLI: https://cloud.google.com/sdk/docs/install
 gcloud auth login
 gcloud config set project YOUR_PROJECT_ID
 
-# Create a Deep Learning VM with T4 GPU (PyTorch pre-installed)
-gcloud compute instances create connect4-training \
-  --zone=us-central1-a \
-  --machine-type=n1-standard-8 \
-  --accelerator=type=nvidia-tesla-t4,count=1 \
-  --image-family=pytorch-latest-gpu \
-  --image-project=deeplearning-platform-release \
-  --maintenance-policy=TERMINATE \
-  --boot-disk-size=50GB \
-  --metadata="install-nvidia-driver=True"
+# Enable Compute Engine API (once per project)
+gcloud services enable compute.googleapis.com
 ```
 
-For V100 instead, replace `nvidia-tesla-t4` with `nvidia-tesla-v100`.
+### Find the Current PyTorch Image
 
-### SSH and Run Training
+The Deep Learning VM image name changes with each PyTorch/CUDA release. Find the latest:
 
 ```bash
-# SSH in (gcloud handles key management automatically)
-gcloud compute ssh connect4-training --zone=us-central1-a
-
-# On the VM:
-git clone https://github.com/eugenep/connect4-alphazero.git
-cd connect4-alphazero
-pip install -e . -q
-mkdir -p logs
-
-# Run in tmux (survives SSH disconnect)
-tmux new -s train
-# First: validate parallel self-play works (2 iterations, ~1h)
-python scripts/train.py --config configs/parallel_test.yaml 2>&1 | tee logs/parallel_test.log
-# Then: full production run with 6 workers
-# Add num_self_play_workers: 6 to configs/full.yaml, then:
-python scripts/train.py --config configs/full.yaml 2>&1 | tee logs/training.log
-# Ctrl+B then D to detach; tmux attach -t train to reattach
+gcloud compute images list --project=deeplearning-platform-release --no-standard-images --filter="family~pytorch" --format="table(family,name,creationTimestamp)" --sort-by="~creationTimestamp" | head -5
 ```
+
+Use the `family` value from the most recent result (e.g. `pytorch-2-7-cu128-ubuntu-2204-nvidia-570`).
+
+### Check L4 Zone Availability
+
+```bash
+gcloud compute accelerator-types list --filter="name=nvidia-l4" --format="table(name,zone)"
+```
+
+Pick a zone from the output (ideally `us-central1-*`).
+
+### Create the VM
+
+L4 GPUs use `g2-standard` machine types — the GPU is built-in, no `--accelerator` flag needed.
+
+```bash
+gcloud compute instances create connect4-fullrun --zone=ZONE --machine-type=g2-standard-4 --image-family=IMAGE_FAMILY --image-project=deeplearning-platform-release --maintenance-policy=TERMINATE --restart-on-failure --boot-disk-size=100GB --metadata=install-nvidia-driver=True
+```
+
+Replace `ZONE` and `IMAGE_FAMILY` with values from the steps above.
+
+### SSH In and Verify GPU
+
+```bash
+gcloud compute ssh connect4-fullrun --zone=ZONE
+```
+
+On the VM:
+
+```bash
+nvidia-smi
+python3 -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# Expected: True  NVIDIA L4
+```
+
+### Clone, Install, and Run
+
+```bash
+git clone https://github.com/eugeneyp/connect4-alphazero.git && cd connect4-alphazero && pip install . -q && mkdir -p logs
+```
+
+Run in tmux so training survives SSH disconnects:
+
+```bash
+tmux new -s fullrun
+```
+
+Inside tmux:
+
+```bash
+python3 scripts/train.py --config configs/full.yaml 2>&1 | tee logs/full_run.log
+```
+
+Detach: `Ctrl+B` then `D`. Reattach later: `tmux attach -t fullrun`.
 
 ### Monitor from Local Machine
 
 ```bash
-gcloud compute ssh connect4-training --zone=us-central1-a \
-  --command="tail -f /home/$(whoami)/connect4-alphazero/logs/training.log"
+gcloud compute ssh connect4-fullrun --zone=ZONE --command="tail -30 ~/connect4-alphazero/logs/full_run.log"
 ```
 
-### Download Results
+**Key log line to watch after each self-play phase:**
+```
+Self-play done: 2000 games in XX.X min (XX.X games/min)
+```
+Baseline (Kaggle P100, serial): ~8–9 games/min. Target (L4, batch_size=32): ~20 games/min.
+
+### Resume After Disconnect
 
 ```bash
-gcloud compute scp --recurse \
-  connect4-training:/home/$(whoami)/connect4-alphazero/checkpoints/ \
-  /Users/eugenep/git/connect4-alphazero/checkpoints/ \
-  --zone=us-central1-a
+gcloud compute ssh connect4-fullrun --zone=ZONE
+cd connect4-alphazero
+tmux attach -t fullrun   # reattach if tmux session still alive
+
+# Or restart from latest checkpoint:
+LATEST=$(ls -t checkpoints/checkpoint_iter_*.pt | head -1)
+python3 scripts/train.py --config configs/full.yaml --resume $LATEST 2>&1 | tee -a logs/full_run.log
+```
+
+### Download Results When Done
+
+```bash
+gcloud compute scp --recurse connect4-fullrun:~/connect4-alphazero/checkpoints/ /Users/eugenep/git/connect4-alphazero/checkpoints/ --zone=ZONE
+
+gcloud compute scp connect4-fullrun:~/connect4-alphazero/logs/full_run.log /Users/eugenep/git/connect4-alphazero/logs/ --zone=ZONE
 ```
 
 ### Stop the VM When Done (avoids charges)
 
 ```bash
-gcloud compute instances stop connect4-training --zone=us-central1-a
-# Delete entirely when no longer needed:
-gcloud compute instances delete connect4-training --zone=us-central1-a
+# Stop (keeps disk, ~$4/month)
+gcloud compute instances stop connect4-fullrun --zone=ZONE
+
+# Delete entirely when no longer needed
+gcloud compute instances delete connect4-fullrun --zone=ZONE
 ```
 
 ---
 
 ## Option D — Vast.ai (Paid, Full Production Run)
-
-For the full `full.yaml` run (600 sims × 5000 games × 25 iterations, ~$15-20 total).
 
 ```bash
 # 1. Rent RTX 3090 instance (~$0.20/hr) with PyTorch template on vast.ai
@@ -256,10 +300,10 @@ rsync -av \
 # 3. SSH in and run with tmux (survives SSH disconnect)
 ssh -p <port> root@<ip>
 cd /workspace/connect4
-pip install -e . -q
+pip install . -q
 mkdir -p logs
 tmux new -s train
-python scripts/train.py --config configs/full.yaml 2>&1 | tee logs/training.log
+python3 scripts/train.py --config configs/full.yaml 2>&1 | tee logs/training.log
 # Ctrl+B then D to detach; tmux attach -t train to reattach
 
 # 4. Monitor from local machine
@@ -276,57 +320,62 @@ rsync -av root@<ip>:<port-path>/workspace/connect4/checkpoints/ \
 
 ### Where the Time Goes
 
-Self-play dominates (~85% of each iteration). The GPU is underutilized because MCTS is a sequential Python loop — each simulation calls the NN once, serially. The GPU sits idle between calls.
+Self-play dominates (~85% of each iteration). Standard MCTS calls the NN once per simulation (batch size 1), leaving the GPU idle ~95% of the time.
 
-| Phase | medium.yaml | Parallelizable? |
+| Phase | full.yaml (L4) | Parallelizable? |
 |---|---|---|
-| Self-play (MCTS) | ~87 min | ✅ Yes — games are independent |
-| NN training | ~3 min | ✅ Yes — multi-GPU DataParallel |
-| Arena | ~10 min | Partially |
-| Benchmark | ~8 min | Partially |
+| Self-play (MCTS) | ~100 min | ✅ Yes — batched MCTS |
+| NN training | ~5 min | ✅ Yes — multi-GPU DataParallel |
+| Arena | ~15 min | Partially |
+| Benchmark | ~5 min | Partially |
 
-### Option 1 — Parallel Self-Play Workers (High Impact, Implemented ✅)
+### Option 1 — Batched MCTS Inference (Recommended ✅ Implemented)
 
-Run N games simultaneously using Python `multiprocessing`. Each worker process plays games independently using a CPU copy of the model. With 4–8 workers on a multi-core instance, self-play becomes 4–8× faster overall.
+Run M MCTS trees in lock-step so all leaf evaluations are batched into a single GPU forward pass per simulation step. GPU utilisation goes from ~5% to ~80%+.
 
-**How it works:** Workers use CPU-only inference. The GPU stays exclusively available to the main process for the training step. Even with CPU inference, parallel games outperform serial GPU games because Python overhead (not GPU compute) is the bottleneck at batch size 1.
-
-**How to enable:** Add `num_self_play_workers` to any config's `training:` section:
+**How to enable:** Add `mcts_batch_size` to any config's `training:` section:
 
 ```yaml
 training:
-  num_self_play_workers: 6  # for n1-standard-8 (8 vCPUs, leave 2 for main + OS)
+  mcts_batch_size: 32   # number of games advancing in lock-step
 ```
 
 The default is `1` (serial, unchanged behavior). All existing configs work as before.
 
-**Validate before a long run** using `configs/parallel_test.yaml` (medium architecture, 2 iterations, 4 workers):
+**Mutually exclusive with `num_self_play_workers > 1`** — don't set both.
+
+**Validate before a long run** using `configs/batched_test.yaml` (medium architecture, 2 iterations, batch_size=32):
 
 ```bash
-python scripts/train.py --config configs/parallel_test.yaml
+python3 scripts/train.py --config configs/batched_test.yaml
 ```
 
-Look for the `Self-play done: ... games/min` log line and compare to the serial baseline (~8–9 games/min on Kaggle P100). Target: 25–35 games/min with 4 workers on GCP `n1-standard-8`.
+Look for the `Self-play done: ... games/min` log line. Baseline (serial P100): ~8–9 games/min. Target (L4, batch_size=32, full.yaml): ~20 games/min.
 
-### Option 2 — Batched MCTS Inference (High Impact, Complex)
+### Option 2 — Parallel Self-Play Workers (CPU inference)
 
-Instead of 1 NN call per simulation, collect multiple pending leaf nodes across parallel MCTS trees and batch them into a single GPU call. This is how the original AlphaZero achieves high GPU utilization.
+Run N games simultaneously using Python `multiprocessing`. Each worker uses a CPU copy of the model. Best for multi-core CPU-only setups or small models where CPU inference is fast.
 
-Speedup: 5–10× GPU throughput. Complexity: significant refactor of `src/mcts/search.py`.
+**How to enable:**
 
-### Option 3 — Multi-GPU DataParallel (Low Impact for This Workload)
+```yaml
+training:
+  num_self_play_workers: 6   # for 8-vCPU instance, leave 2 for main + OS
+```
 
-`torch.nn.DataParallel` splits each training batch across multiple GPUs. Since training is already fast (~3 min), this gives minimal overall speedup. Not worth the complexity unless the model grows much larger.
+**Not recommended alongside batched MCTS** — the two approaches are mutually exclusive. Use batched MCTS when a GPU is available; use parallel workers for CPU-only training.
+
+### Option 3 — Multi-GPU DataParallel (Low Impact)
+
+`torch.nn.DataParallel` splits each training batch across multiple GPUs. Since training takes only ~5 min per iteration, this gives minimal overall speedup. Not worth the complexity.
 
 ### Summary
 
-| Optimization | Speedup | Effort | Status |
-|---|---|---|---|
-| Parallel self-play workers | 4–8× | Medium | **Done ✅** |
-| Batched MCTS inference | 5–10× | High | Future |
-| Multi-GPU DataParallel | ~1.1× | Low | Not worth it |
-
-With parallel self-play implemented, the recommended GCP path is: `n1-standard-8` + T4 with `num_self_play_workers: 6`. This brings `full.yaml` from ~31h/iter to ~5–8h/iter, making the full 25-iteration run feasible in ~150h (~$52 on T4).
+| Optimization | Speedup vs serial | Status |
+|---|---|---|
+| Batched MCTS (GPU, batch_size=32) | ~6× on L4 | **Done ✅** |
+| Parallel self-play workers (CPU) | 4–8× on multi-core | **Done ✅** |
+| Multi-GPU DataParallel | ~1.1× | Not worth it |
 
 ---
 
@@ -341,6 +390,8 @@ Applies to all platforms:
 | Arena `win_rate` | N/A (first iter auto-accepts) | Some iterations ≥ 0.55 | Never ≥ 0.55 → not improving |
 | Benchmark vs Random | ~50% (random model) | Increasing toward 95%+ | Flat → training not working |
 
+**Arena win_rate** is calculated over decisive games only (wins / (wins + losses), draws excluded). A result of 10W/1L/19D = 0.91 win_rate → accepted.
+
 **Value head collapse** (value_loss stuck near 0.33): restart with `learning_rate: 5.0e-4`.
 
 **First 3–5 iterations:** The agent barely beats random — this is normal. Meaningful improvement shows around iteration 8–12.
@@ -353,19 +404,19 @@ After downloading `best_model.pt` to `checkpoints/`:
 
 ```bash
 # Benchmark against all classical agents
-python scripts/evaluate.py \
+python3 scripts/evaluate.py \
   --checkpoint checkpoints/best_model.pt \
   --num-games 100 \
   --depth 1 3 5 \
   --mcts-sims 400
 
 # Export to ONNX for Kaggle submission
-python scripts/export_onnx.py \
+python3 scripts/export_onnx.py \
   --checkpoint checkpoints/best_model.pt \
   --output model.onnx
 
 # Package and submit to Kaggle
-python scripts/kaggle_submit.py \
+python3 scripts/kaggle_submit.py \
   --model model.onnx \
   --output submission/
 ```
@@ -380,11 +431,11 @@ python scripts/kaggle_submit.py \
 
 ## Config Reference
 
-| Config | Model | Sims | Games/iter | Workers | Time/iter | Use |
+| Config | Model | Sims | Games/iter | batch_size | Time/iter | Use |
 |---|---|---|---|---|---|---|
 | `tiny.yaml` | 2b/32f | 50 | 100 | 1 | ~5 min | Local unit tests |
 | `cloud.yaml` | 5b/128f | 100 | 200 | 1 | ~20 min | Pipeline validation |
 | `medium.yaml` | 4b/64f | 200 | 800 | 1 | ~100 min (P100) | **Kaggle/Colab training run** |
-| `parallel_test.yaml` | 4b/64f | 200 | 800 | 4 | ~25–40 min (GCP T4) | Validate parallel self-play |
+| `batched_test.yaml` | 4b/64f | 200 | 800 | 32 | ~20 min (L4) | Validate batched MCTS on GCP |
 | `small.yaml` | 3b/64f | 200 | 1000 | 1 | ~1-2h | Alternative medium run |
-| `full.yaml` + 6 workers | 5b/128f | 600 | 5000 | 6 | ~5–8h (GCP T4) | GCP production run |
+| `full.yaml` | 5b/128f | 400 | 2000 | 32 | ~2h (L4) | **GCP production run** |
