@@ -4,6 +4,7 @@ Trains the Connect4Net on (state, policy, value) samples from the
 replay buffer using combined MSE + soft cross-entropy loss.
 """
 
+import logging
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -133,15 +134,23 @@ class Trainer:
             Dict with averaged metrics across all epochs:
             'policy_loss', 'value_loss', 'total_loss'.
         """
+        logger = logging.getLogger(__name__)
         total_metrics: dict[str, float] = {
             "policy_loss": 0.0,
             "value_loss": 0.0,
             "total_loss": 0.0,
         }
 
-        for _ in range(epochs):
+        for epoch in range(epochs):
             epoch_metrics = self.train_epoch(replay_buffer)
             for key in total_metrics:
                 total_metrics[key] += epoch_metrics[key]
+            logger.info(
+                "  Epoch %d/%d — policy: %.4f  value: %.4f  total: %.4f",
+                epoch + 1, epochs,
+                epoch_metrics["policy_loss"],
+                epoch_metrics["value_loss"],
+                epoch_metrics["total_loss"],
+            )
 
         return {key: val / epochs for key, val in total_metrics.items()}
