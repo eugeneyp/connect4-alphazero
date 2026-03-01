@@ -83,6 +83,36 @@ print(f"Resuming from: {latest}")
   2>&1 | tee /kaggle/working/training.log
 ```
 
+### Running medium_v2 (Batched, Recommended)
+
+Use `medium_v2.yaml` for all new Kaggle runs. It enables batched GPU inference (`mcts_batch_size: 32`), giving ~25 min/iter instead of ~100 min — fitting ~18 iterations per 9h session.
+
+**Fresh start (Cell 2):**
+
+```python
+%cd /kaggle/working/connect4-alphazero
+!python3 scripts/train.py --config configs/medium_v2.yaml \
+  2>&1 | tee /kaggle/working/training.log
+```
+
+**Resuming from a previous medium run (e.g. checkpoint_iter_010.pt):**
+
+Follow Steps 1–3 from "Resuming After Session Cutoff" above, then:
+
+```python
+import glob
+
+checkpoints = sorted(glob.glob('/kaggle/input/datasets/YOUR_USERNAME/connect4-checkpoints/connect4-alphazero/checkpoints/checkpoint_iter_*.pt'))
+latest = checkpoints[-1]
+print(f"Resuming from: {latest}")
+
+%cd /kaggle/working/connect4-alphazero
+!python3 scripts/train.py --config configs/medium_v2.yaml --resume {latest} \
+  2>&1 | tee /kaggle/working/training.log
+```
+
+The config has `num_iterations: 22` — resuming from iteration 10 (`checkpoint_iter_010.pt`) will run 11 more iterations (11 through 21).
+
 ### Downloading Results
 
 After the final run completes, go to the notebook's **Output** tab:
@@ -435,7 +465,8 @@ python3 scripts/kaggle_submit.py \
 |---|---|---|---|---|---|---|
 | `tiny.yaml` | 2b/32f | 50 | 100 | 1 | ~5 min | Local unit tests |
 | `cloud.yaml` | 5b/128f | 100 | 200 | 1 | ~20 min | Pipeline validation |
-| `medium.yaml` | 4b/64f | 200 | 800 | 1 | ~100 min (P100) | **Kaggle/Colab training run** |
+| `medium.yaml` | 4b/64f | 200 | 800 | 1 | ~100 min (P100) | Kaggle serial run (legacy) |
+| `medium_v2.yaml` | 4b/64f | 300 | 800 | 32 | ~25 min (P100) | **Kaggle batched run (recommended)** |
 | `batched_test.yaml` | 4b/64f | 200 | 800 | 32 | ~20 min (L4) | Validate batched MCTS on GCP |
 | `small.yaml` | 3b/64f | 200 | 1000 | 1 | ~1-2h | Alternative medium run |
 | `full.yaml` | 5b/128f | 400 | 2000 | 32 | ~2h (L4) | **GCP production run** |
