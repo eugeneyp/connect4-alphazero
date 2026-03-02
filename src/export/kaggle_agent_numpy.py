@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import time
 
 import numpy as np
 
@@ -32,7 +33,7 @@ else:
     _CWD = ''
 
 _WEIGHTS_PATH: str = _CWD + "weights.npz"
-_TIME_BUDGET_SECS: float = 1.9  # sentinel
+_TIME_BUDGET_SECS: float = 2.0  # sentinel
 
 # -------------------------------------------------------------------------
 # Section 1: Board logic
@@ -120,7 +121,33 @@ def _load_weights() -> dict:
     if _weights is None:
         npz = np.load(_WEIGHTS_PATH)
         _weights = {k: npz[k] for k in npz.files}
+        _fold_bn(_weights)
     return _weights
+
+
+def _fold_bn(w: dict) -> None:
+    """Pre-compute BN scale/shift at load time so inference uses 2 ops instead of 5.
+
+    For each BN layer: scale = gamma / sqrt(var + eps), shift = beta - mean * scale.
+    Stored as new keys "<layer>.scale" and "<layer>.shift".
+    """
+    num_blocks = int(w["num_blocks"])
+    bn_keys = (
+        ["stem.1"]
+        + [f"tower.{i}.bn1" for i in range(num_blocks)]
+        + [f"tower.{i}.bn2" for i in range(num_blocks)]
+        + ["policy_head.1", "value_head.1"]
+    )
+    for key in bn_keys:
+        scale = (w[f"{key}.weight"] / np.sqrt(w[f"{key}.running_var"] + 1e-5)).astype(np.float32)
+        shift = (w[f"{key}.bias"] - w[f"{key}.running_mean"] * scale).astype(np.float32)
+        w[f"{key}.scale"] = scale
+        w[f"{key}.shift"] = shift
+
+
+def _bn_fast(x: np.ndarray, scale: np.ndarray, shift: np.ndarray) -> np.ndarray:
+    """Apply pre-folded BN: y = x * scale + shift."""
+    return x * scale[None, :, None, None] + shift[None, :, None, None]
 
 
 def _conv2d(x: np.ndarray, w: np.ndarray, pad: int = 1) -> np.ndarray:
@@ -141,12 +168,11 @@ def _conv2d(x: np.ndarray, w: np.ndarray, pad: int = 1) -> np.ndarray:
     H_out = H - kH + 1
     W_out = W - kW + 1
 
-    col = np.empty((H_out * W_out, C * kH * kW), dtype=np.float32)
-    idx = 0
-    for h in range(H_out):
-        for wi in range(W_out):
-            col[idx] = x[0, :, h : h + kH, wi : wi + kW].ravel()
-            idx += 1
+    # Vectorised im2col via stride tricks — no Python loop over spatial positions.
+    shape   = (H_out, W_out, C, kH, kW)
+    strides = (x.strides[2], x.strides[3], x.strides[1], x.strides[2], x.strides[3])
+    col = np.lib.stride_tricks.as_strided(x[0], shape=shape, strides=strides)
+    col = col.reshape(H_out * W_out, C * kH * kW)
 
     out = col @ w.reshape(F, -1).T
     return out.T.reshape(1, F, H_out, W_out)
@@ -173,34 +199,25 @@ def _predict(state: np.ndarray) -> tuple[np.ndarray, float]:
 
     # Stem
     x = _conv2d(state, w["stem.0.weight"], pad=1)
-    x = _bn(x, w["stem.1.weight"], w["stem.1.bias"],
-            w["stem.1.running_mean"], w["stem.1.running_var"])
-    x = np.maximum(x, 0)
+    x = np.maximum(_bn_fast(x, w["stem.1.scale"], w["stem.1.shift"]), 0)
 
     # Residual tower
     for i in range(num_blocks):
         residual = x
         out = _conv2d(x, w[f"tower.{i}.conv1.weight"], pad=1)
-        out = _bn(out, w[f"tower.{i}.bn1.weight"], w[f"tower.{i}.bn1.bias"],
-                  w[f"tower.{i}.bn1.running_mean"], w[f"tower.{i}.bn1.running_var"])
-        out = np.maximum(out, 0)
+        out = np.maximum(_bn_fast(out, w[f"tower.{i}.bn1.scale"], w[f"tower.{i}.bn1.shift"]), 0)
         out = _conv2d(out, w[f"tower.{i}.conv2.weight"], pad=1)
-        out = _bn(out, w[f"tower.{i}.bn2.weight"], w[f"tower.{i}.bn2.bias"],
-                  w[f"tower.{i}.bn2.running_mean"], w[f"tower.{i}.bn2.running_var"])
+        out = _bn_fast(out, w[f"tower.{i}.bn2.scale"], w[f"tower.{i}.bn2.shift"])
         x = np.maximum(out + residual, 0)
 
     # Policy head: 1×1 conv → BN → ReLU → flatten → linear
     p = _conv2d(x, w["policy_head.0.weight"], pad=0)
-    p = _bn(p, w["policy_head.1.weight"], w["policy_head.1.bias"],
-            w["policy_head.1.running_mean"], w["policy_head.1.running_var"])
-    p = np.maximum(p, 0).reshape(1, -1)
+    p = np.maximum(_bn_fast(p, w["policy_head.1.scale"], w["policy_head.1.shift"]), 0).reshape(1, -1)
     policy_logits = (p @ w["policy_head.4.weight"].T + w["policy_head.4.bias"])[0]
 
     # Value head: 1×1 conv → BN → ReLU → flatten → linear → ReLU → linear → tanh
     v = _conv2d(x, w["value_head.0.weight"], pad=0)
-    v = _bn(v, w["value_head.1.weight"], w["value_head.1.bias"],
-            w["value_head.1.running_mean"], w["value_head.1.running_var"])
-    v = np.maximum(v, 0).reshape(1, -1)
+    v = np.maximum(_bn_fast(v, w["value_head.1.scale"], w["value_head.1.shift"]), 0).reshape(1, -1)
     v = np.maximum(v @ w["value_head.4.weight"].T + w["value_head.4.bias"], 0)
     v = v @ w["value_head.6.weight"].T + w["value_head.6.bias"]
     value = float(np.tanh(v[0, 0]))
@@ -217,7 +234,7 @@ _C_PUCT: float = 2.0
 
 class _MCTSNode:
     __slots__ = ["board_flat", "mark", "parent", "action", "prior",
-                 "visit_count", "value_sum", "children"]
+                 "visit_count", "value_sum", "children", "terminal"]
 
     def __init__(self, board_flat, mark, parent=None, action=None, prior=0.0):
         self.board_flat = board_flat
@@ -228,6 +245,7 @@ class _MCTSNode:
         self.visit_count: int = 0
         self.value_sum: float = 0.0
         self.children: dict = {}
+        self.terminal: bool = _is_terminal(board_flat)
 
     @property
     def q_value(self) -> float:
@@ -244,7 +262,7 @@ def _puct_score(parent: _MCTSNode, child: _MCTSNode) -> float:
 
 
 def _expand(node: _MCTSNode) -> float:
-    if _is_terminal(node.board_flat):
+    if node.terminal:
         return _get_result(node.board_flat, node.mark)
     if node.children:
         return 0.0
@@ -277,14 +295,13 @@ def _backup(node: _MCTSNode, value: float) -> None:
 
 
 def _mcts_search(board_flat: list[int], mark: int, time_budget_secs: float) -> tuple[int, float, int]:
-    import time
     root = _MCTSNode(board_flat=list(board_flat), mark=mark)
     _expand(root)
     sims = 0
     t_start = time.perf_counter()
     while time.perf_counter() - t_start < time_budget_secs:
         node = root
-        while node.children and not _is_terminal(node.board_flat):
+        while node.children and not node.terminal:
             best_score = -float("inf")
             best_child = None
             for child in node.children.values():
