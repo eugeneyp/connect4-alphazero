@@ -29,6 +29,15 @@ h1 {
   color: #e6edf3;
 }
 
+#subtitle {
+  font-size: 0.95rem;
+  color: #8b949e;
+  text-align: center;
+  max-width: 480px;
+  line-height: 1.5;
+  margin-top: -8px;
+}
+
 /* ── Controls ─────────────────────────────────────────────────────── */
 #controls {
   background: #161b22;
@@ -161,6 +170,21 @@ h1 {
 }
 .swatch-human { background: #e53935; }
 .swatch-ai    { background: #fdd835; }
+
+/* ── Footer ───────────────────────────────────────────────────────── */
+footer {
+  font-size: 0.85rem;
+  color: #8b949e;
+  text-align: center;
+}
+
+footer a {
+  color: #8b949e;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+footer a:hover { color: #c9d1d9; }
 
 /* ── Responsive ───────────────────────────────────────────────────── */
 @media (max-width: 620px) {

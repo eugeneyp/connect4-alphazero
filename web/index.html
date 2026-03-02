@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Connect 4 vs AlphaZero</title>
+  <title>Connect 4</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <div id="app">
-    <h1>Connect 4 vs AlphaZero</h1>
+    <h1>Connect 4</h1>
+    <p id="subtitle">Play against an AI that trained itself with tens of thousands of games in the style of AlphaZero reinforcement learning.</p>
 
     <div id="controls">
       <button id="newGameBtn">New Game</button>
@@ -49,6 +50,10 @@
       <span class="legend-item"><span class="swatch swatch-human"></span> You</span>
       <span class="legend-item"><span class="swatch swatch-ai"></span> AI</span>
     </div>
+
+    <footer>
+      Built by Eugene Peng (<a href="https://github.com/eugeneyp/connect4-alphazero" target="_blank" rel="noopener">GitHub</a>)
+    </footer>
   </div>
 
   <script src="game.js"></script>
