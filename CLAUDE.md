@@ -855,16 +855,33 @@ python scripts/train.py --config configs/medium.yaml --resume checkpoints/checkp
 
 ---
 
-### Iteration 8: Web Interface (4-6 hours)
+### Iteration 8: Web Interface ✅ COMPLETE
 
 **Goal:** Playable Connect 4 in browser with custom UI.
 
-**Deliverables:**
-- Canvas-based board with drop animations, hover preview, win highlighting
-- ONNX Runtime Web inference in Web Worker
-- Human-vs-AI and AI-vs-AI modes
-- Deployed to GitHub Pages
-- Details in Section 12
+**Done:**
+- `web/index.html` — layout: controls (New Game, who-first radio, difficulty select), status bar, canvas
+- `web/style.css` — dark theme (`#0d1117`), blue board (`#1565c0`), red/yellow pieces, win glow
+- `web/game.js` — canvas rendering, 350ms gravity drop animation (ease-in), hover preview, win highlight, worker communication
+- `web/ai_worker.js` — ONNX Runtime Web (WASM) + full JS MCTS (port of `kaggle_agent_numpy.py`); no Dirichlet noise (evaluation mode)
+- `web/model.onnx` — committed to repo (generated from `baseline_b2_f32.pt`; regenerate for stronger models)
+
+**Workflow:**
+```bash
+# 1. Export any checkpoint to web/model.onnx
+python scripts/export_onnx.py --checkpoint checkpoints/best_model.pt --output web/model.onnx
+
+# 2. Serve locally (required — ONNX can't load from file:// due to CORS)
+cd web && python -m http.server 8080
+# Open http://localhost:8080
+
+# Stop server:
+kill $(lsof -ti:8080)
+```
+
+**Board convention (critical):** `board[row][col]` row 0 = BOTTOM in both `game.js` and `ai_worker.js`, matching Python `board.py`. Canvas rendering flips for display (`canvasRow = 5 - row`). The Kaggle agent is the outlier (Kaggle row 0 = TOP with explicit flip in `_encode_board`) — do not confuse the two.
+
+**Difficulty options:** 0 (policy-only, instant) → 50 → 100 → 200 → 400 simulations. C_PUCT = 2.0.
 
 ---
 
@@ -1011,52 +1028,57 @@ Run benchmark: `python scripts/benchmark_mcts.py --models tiny small full --sims
 ### Architecture: Fully Client-Side
 
 ```
-GitHub Pages (free)
-├── index.html
-├── style.css
-├── game.js             # Canvas rendering + game logic
-├── ai_worker.js        # Web Worker for ONNX inference
-├── model.onnx          # ~6MB trained model
-└── (onnxruntime-web via CDN)
+web/  (served via python -m http.server 8080 or GitHub Pages)
+├── index.html          # Layout, controls, canvas, status bar
+├── style.css           # Dark theme, blue board, red/yellow pieces
+├── game.js             # Canvas rendering + game logic + worker comms
+├── ai_worker.js        # Web Worker: ONNX Runtime Web (WASM) + JS MCTS
+└── model.onnx          # Committed; regenerate with export_onnx.py
+                        # (onnxruntime-web loaded via CDN in ai_worker.js)
 ```
 
 ### Board Rendering (Canvas API)
 
-- 7×6 grid with clean, modern visual design
-- Smooth drop animation with gravity easing
-- Column hover preview
-- Winning four highlighted
-- Responsive for mobile and desktop
+- 580×570px canvas; 80px cells; 34px piece radius
+- 350ms gravity drop animation (ease-in: `progress = t²`)
+- Semi-transparent red piece preview on hover
+- Win highlight: `#00e676` glow ring around winning 4 pieces
+- Status bar with colored dot (human=red, AI=yellow, win=green, loading=pulsing blue)
 
 ### AI via Web Worker
 
 ```javascript
-// ai_worker.js
-import * as ort from 'onnxruntime-web';
-let session = null;
+// ai_worker.js — uses importScripts (not ES module import)
+importScripts('https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js');
 
 self.onmessage = async (e) => {
     if (e.data.type === 'init') {
-        session = await ort.InferenceSession.create('model.onnx');
+        ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+        session = await ort.InferenceSession.create(e.data.modelUrl, { executionProviders: ['wasm'] });
         self.postMessage({ type: 'ready' });
     } else if (e.data.type === 'getMove') {
-        const input = new ort.Tensor('float32', e.data.boardData, [1, 3, 6, 7]);
-        const results = await session.run({ board_state: input });
-        // Mask illegal moves, return argmax
-        self.postMessage({ type: 'move', column: bestCol });
+        const col = await mcts(e.data.board, aiMark, e.data.numSims);
+        self.postMessage({ type: 'move', col });
     }
 };
 ```
 
+MCTS in the worker is a full port of `kaggle_agent_numpy.py`: PUCT selection, sign-flipping backup,
+masked softmax. No Dirichlet noise (evaluation mode). Temperature = 0 (argmax on most-visited).
+
 ### Game Modes
 
-- **Human vs AI** — click column, AI responds with "thinking" indicator
-- **AI vs AI** — automated play with speed controls
-- **Difficulty** — vary MCTS sims: 0=instant/policy-only, 50=easy, 200=hard
+- **Human vs AI** — click column, AI responds with "AI is thinking..." indicator
+- **Who goes first** — radio buttons: you first / AI first
+- **Difficulty** — select: 0 (policy-only, instant) / 50 / 100 / 200 / 400 simulations
 
-### Fallback: Policy-Only Mode
+### Updating the Model
 
-If JavaScript MCTS is too complex for timeline, use raw policy head (no search). After training, the policy head alone beats minimax depth-5.
+Replace `web/model.onnx` with a stronger checkpoint at any time:
+```bash
+python scripts/export_onnx.py --checkpoint checkpoints/best_model.pt --output web/model.onnx
+```
+The model size scales with architecture: tiny ~1.5 MB, full ~6 MB.
 
 ---
 

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Connect 4 vs AlphaZero</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <h1>Connect 4 vs AlphaZero</h1>
+
+    <div id="controls">
+      <button id="newGameBtn">New Game</button>
+
+      <div class="control-group">
+        <label>
+          <input type="radio" name="whoFirst" id="humanFirst" value="human" checked />
+          You play first
+        </label>
+        <label>
+          <input type="radio" name="whoFirst" id="aiFirst" value="ai" />
+          AI plays first
+        </label>
+      </div>
+
+      <div class="control-group">
+        <label for="difficulty">Difficulty:</label>
+        <select id="difficulty">
+          <option value="0">No simulations (fastest)</option>
+          <option value="50">50 simulations (easy)</option>
+          <option value="100">100 simulations (medium)</option>
+          <option value="200" selected>200 simulations (hard)</option>
+          <option value="400">400 simulations (hardest)</option>
+        </select>
+      </div>
+    </div>
+
+    <div id="statusBar">
+      <span id="statusDot" class="dot dot-idle"></span>
+      <span id="statusText">Loading AI model...</span>
+    </div>
+
+    <div id="canvasWrapper">
+      <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <div id="legend">
+      <span class="legend-item"><span class="swatch swatch-human"></span> You</span>
+      <span class="legend-item"><span class="swatch swatch-ai"></span> AI</span>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>
