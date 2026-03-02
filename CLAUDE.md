@@ -860,28 +860,34 @@ python scripts/train.py --config configs/medium.yaml --resume checkpoints/checkp
 **Goal:** Playable Connect 4 in browser with custom UI.
 
 **Done:**
-- `web/index.html` — layout: controls (New Game, who-first radio, difficulty select), status bar, canvas
-- `web/style.css` — dark theme (`#0d1117`), blue board (`#1565c0`), red/yellow pieces, win glow
-- `web/game.js` — canvas rendering, 350ms gravity drop animation (ease-in), hover preview, win highlight, worker communication
-- `web/ai_worker.js` — ONNX Runtime Web (WASM) + full JS MCTS (port of `kaggle_agent_numpy.py`); no Dirichlet noise (evaluation mode)
-- `web/model.onnx` — committed to repo (generated from `baseline_b2_f32.pt`; regenerate for stronger models)
+- `web/index.html` — title "Connect 4", subtitle, controls (Model, Lookahead, who-first radio, New Game, Take Back), status bar, canvas, footer
+- `web/style.css` — dark theme (`#0d1117`), blue board (`#1565c0`), red/yellow pieces, win glow, dark-mode selects
+- `web/game.js` — canvas rendering, 350ms gravity drop animation (ease-in), hover preview, win highlight, move history stack, worker comms
+- `web/ai_worker.js` — ONNX Runtime Web (WASM) + full JS MCTS (port of `kaggle_agent_numpy.py`); supports `init`/`loadModel`/`getMove` messages; no Dirichlet noise
+- `web/models/tiny.onnx` (1.5 MB), `web/models/medium.onnx` (2.5 MB), `web/models/large.onnx` (7 MB) — committed
+- `web/model.onnx` — legacy single-model file (kept for backwards compat)
+- `.github/workflows/deploy.yml` — auto-deploys `web/` to GitHub Pages on every push to `main` that touches `web/**`
 
-**Workflow:**
+**Controls:**
+- **Model:** Tiny (2b/32f) / Medium (4b/64f) / Large (5b/128f) — hot-swaps ONNX session via `loadModel` message on New Game
+- **Lookahead:** Instant (0) / Quick (50) / Normal (100) / Strong (200) / Max (400 sims)
+- **Take Back:** undoes human's last move + AI's response (2 plies); if AI is still thinking, cancels the pending response and undoes 1 ply
+
+**Local workflow:**
 ```bash
-# 1. Export any checkpoint to web/model.onnx
-python scripts/export_onnx.py --checkpoint checkpoints/best_model.pt --output web/model.onnx
+# Serve locally (required — ONNX can't load from file:// due to CORS)
+cd web && python -m http.server 8080   # open http://localhost:8080
+kill $(lsof -ti:8080)                  # stop server
+```
 
-# 2. Serve locally (required — ONNX can't load from file:// due to CORS)
-cd web && python -m http.server 8080
-# Open http://localhost:8080
-
-# Stop server:
-kill $(lsof -ti:8080)
+**Update a model:**
+```bash
+python scripts/export_onnx.py --checkpoint checkpoints/best_model.pt --output web/models/large.onnx
+git add web/models/large.onnx && git commit -m "feat: update large model" && git push
+# GitHub Actions redeploys automatically
 ```
 
 **Board convention (critical):** `board[row][col]` row 0 = BOTTOM in both `game.js` and `ai_worker.js`, matching Python `board.py`. Canvas rendering flips for display (`canvasRow = 5 - row`). The Kaggle agent is the outlier (Kaggle row 0 = TOP with explicit flip in `_encode_board`) — do not confuse the two.
-
-**Difficulty options:** 0 (policy-only, instant) → 50 → 100 → 200 → 400 simulations. C_PUCT = 2.0.
 
 ---
 
@@ -1072,13 +1078,29 @@ masked softmax. No Dirichlet noise (evaluation mode). Temperature = 0 (argmax on
 - **Who goes first** — radio buttons: you first / AI first
 - **Difficulty** — select: 0 (policy-only, instant) / 50 / 100 / 200 / 400 simulations
 
-### Updating the Model
+### Updating a Model
 
-Replace `web/model.onnx` with a stronger checkpoint at any time:
+Export a new checkpoint and push — GitHub Actions redeploys automatically:
 ```bash
-python scripts/export_onnx.py --checkpoint checkpoints/best_model.pt --output web/model.onnx
+python scripts/export_onnx.py --checkpoint checkpoints/best_model.pt --output web/models/large.onnx
+git add web/models/large.onnx && git commit -m "feat: update large model" && git push
 ```
-The model size scales with architecture: tiny ~1.5 MB, full ~6 MB.
+Model sizes: tiny ~1.5 MB, medium ~2.5 MB, large ~7 MB.
+
+### GitHub Pages Deployment
+
+**Live URL:** https://eugeneyp.github.io/connect4-alphazero/
+
+**How it works:** `.github/workflows/deploy.yml` triggers on every push to `main` that touches `web/**`. It uploads the `web/` folder as a Pages artifact and deploys it. No build step — pure static file serving.
+
+**To redeploy:** push any change to a file under `web/`. GitHub Actions picks it up automatically. Monitor progress at:
+```
+https://github.com/eugeneyp/connect4-alphazero/actions
+```
+
+**Manual redeploy** (without a code change): Actions tab → "Deploy to GitHub Pages" → "Run workflow".
+
+**One-time setup** (already done): repo Settings → Pages → Source → GitHub Actions.
 
 ---
 
