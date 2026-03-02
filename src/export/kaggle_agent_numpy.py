@@ -32,7 +32,7 @@ else:
     _CWD = ''
 
 _WEIGHTS_PATH: str = _CWD + "weights.npz"
-_NUM_MCTS_SIMS: int = 200  # sentinel
+_TIME_BUDGET_SECS: float = 1.9  # sentinel
 
 # -------------------------------------------------------------------------
 # Section 1: Board logic
@@ -276,10 +276,13 @@ def _backup(node: _MCTSNode, value: float) -> None:
         current = current.parent
 
 
-def _mcts_search(board_flat: list[int], mark: int, num_simulations: int) -> int:
+def _mcts_search(board_flat: list[int], mark: int, time_budget_secs: float) -> tuple[int, float, int]:
+    import time
     root = _MCTSNode(board_flat=list(board_flat), mark=mark)
     _expand(root)
-    for _ in range(num_simulations):
+    sims = 0
+    t_start = time.perf_counter()
+    while time.perf_counter() - t_start < time_budget_secs:
         node = root
         while node.children and not _is_terminal(node.board_flat):
             best_score = -float("inf")
@@ -291,7 +294,9 @@ def _mcts_search(board_flat: list[int], mark: int, num_simulations: int) -> int:
                     best_child = child
             node = best_child  # type: ignore[assignment]
         _backup(node, _expand(node))
-    return max(root.children, key=lambda c: root.children[c].visit_count)
+        sims += 1
+    best_move = max(root.children, key=lambda c: root.children[c].visit_count)
+    return best_move, root.q_value, sims
 
 
 # -------------------------------------------------------------------------
@@ -300,4 +305,8 @@ def _mcts_search(board_flat: list[int], mark: int, num_simulations: int) -> int:
 
 def my_agent(observation, configuration) -> int:
     """Kaggle Connect-X agent — pure numpy ResNet + MCTS, no onnxruntime."""
-    return _mcts_search(observation.board, observation.mark, _NUM_MCTS_SIMS)
+    best_move, value, sims = _mcts_search(
+        observation.board, observation.mark, _TIME_BUDGET_SECS
+    )
+    print(f"[agent] sims={sims}  value={value:+.3f}  move={best_move}")
+    return best_move

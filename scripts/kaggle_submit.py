@@ -50,7 +50,7 @@ _MODEL_PATH_SENTINEL: str = '_MODEL_PATH: str = "model.onnx"'
 _NUM_SIMS_SENTINEL: str = "_NUM_MCTS_SIMS: int = 200"
 
 # Sentinel in kaggle_agent_numpy.py
-_NUMPY_NUM_SIMS_SENTINEL: str = "_NUM_MCTS_SIMS: int = 200  # sentinel"
+_NUMPY_TIME_BUDGET_SENTINEL: str = "_TIME_BUDGET_SECS: float = 1.9  # sentinel"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -101,10 +101,10 @@ def _parse_args() -> argparse.Namespace:
         help="Output directory for the submission package.",
     )
     parser.add_argument(
-        "--num-sims",
-        type=int,
-        default=200,
-        help="Number of MCTS simulations per move (default: 200).",
+        "--time-budget",
+        type=float,
+        default=1.9,
+        help="Time budget in seconds per move (default: 1.9; Kaggle allows 2s per move).",
     )
     parser.add_argument(
         "--dataset-path",
@@ -146,7 +146,7 @@ def _extract_weights_npz(checkpoint_path: Path) -> bytes:
 def _build_tar_submission(
     output_dir: Path,
     checkpoint_path: Path,
-    num_sims: int,
+    time_budget: float,
 ) -> Path:
     """Create submission.tar.gz: main.py (numpy agent) + weights.npz.
 
@@ -168,13 +168,13 @@ def _build_tar_submission(
 
     # Build main.py from the numpy agent template
     source = _NUMPY_AGENT_SOURCE.read_text(encoding="utf-8")
-    if _NUMPY_NUM_SIMS_SENTINEL not in source:
-        print(f"Error: sentinel not found in {_NUMPY_AGENT_SOURCE}:\n  {_NUMPY_NUM_SIMS_SENTINEL}", file=sys.stderr)
+    if _NUMPY_TIME_BUDGET_SENTINEL not in source:
+        print(f"Error: sentinel not found in {_NUMPY_AGENT_SOURCE}:\n  {_NUMPY_TIME_BUDGET_SENTINEL}", file=sys.stderr)
         sys.exit(1)
 
     source = source.replace(
-        _NUMPY_NUM_SIMS_SENTINEL,
-        f"_NUM_MCTS_SIMS: int = {num_sims}",
+        _NUMPY_TIME_BUDGET_SENTINEL,
+        f"_TIME_BUDGET_SECS: float = {time_budget}",
     )
 
     # Build tar.gz
@@ -193,7 +193,7 @@ def _build_tar_submission(
     size_mb = tar_path.stat().st_size / (1024 * 1024)
     print(f"Wrote {tar_path}  ({size_mb:.2f} MB)")
     print(f"\nSubmission ready: {tar_path}")
-    print(f"  main.py     (numpy ResNet + MCTS, {num_sims} sims)")
+    print(f"  main.py     (numpy ResNet + MCTS, {time_budget}s budget)")
     print(f"  weights.npz ({npz_size_kb:.0f} KB)")
     print("\nNext step: upload submission.tar.gz to Kaggle → Submit Predictions.")
     return tar_path
@@ -287,28 +287,28 @@ def main() -> None:
         if not checkpoint_path.exists():
             print(f"Error: checkpoint not found: {checkpoint_path}", file=sys.stderr)
             sys.exit(1)
-        _build_tar_submission(output_dir, checkpoint_path, args.num_sims)
+        _build_tar_submission(output_dir, checkpoint_path, args.time_budget)
 
     elif args.base64:
         model_path = Path(args.model) if args.model else None
         if not model_path or not model_path.exists():
             print("Error: --base64 requires --model <path/to/model.onnx>", file=sys.stderr)
             sys.exit(1)
-        _build_base64_submission(output_dir, model_path, args.num_sims)
+        _build_base64_submission(output_dir, model_path, 200)
 
     elif args.zip:
         model_path = Path(args.model) if args.model else None
         if not model_path or not model_path.exists():
             print("Error: --zip requires --model <path/to/model.onnx>", file=sys.stderr)
             sys.exit(1)
-        _build_zip(output_dir, model_path, args.num_sims)
+        _build_zip(output_dir, model_path, 200)
 
     else:
         model_path = Path(args.model) if args.model else None
         if not model_path or not model_path.exists():
             print("Error: directory mode requires --model <path/to/model.onnx>", file=sys.stderr)
             sys.exit(1)
-        _build_directory(output_dir, model_path, args.dataset_path, args.num_sims)
+        _build_directory(output_dir, model_path, args.dataset_path, 200)
 
 
 if __name__ == "__main__":
