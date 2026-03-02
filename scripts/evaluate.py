@@ -109,13 +109,17 @@ def _build_agent_pool(args: argparse.Namespace) -> list[Agent]:
     Returns:
         List of agent instances.
     """
-    agents: list[Agent] = [RandomAgent()]
+    agents: list[Agent] = []
+
+    if not args.az_only:
+        agents.append(RandomAgent())
 
     depths = args.depth if args.depth else [1, 3, 5]
     for d in depths:
         agents.append(MinimaxAgent(max_depth=d))
 
-    agents.append(MCTSAgent(num_simulations=args.mcts_sims))
+    if not args.az_only:
+        agents.append(MCTSAgent(num_simulations=args.mcts_sims))
 
     if args.checkpoint:
         ckpt_path = Path(args.checkpoint)
@@ -186,6 +190,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional path to write JSON results.",
     )
+    parser.add_argument(
+        "--az-only",
+        action="store_true",
+        default=False,
+        help="Only run AlphaZero vs each opponent (skips Random, MCTS, and Minimax vs Minimax).",
+    )
     return parser.parse_args()
 
 
@@ -199,20 +209,35 @@ def main() -> None:
 
     results: list[dict] = []
 
-    # Only run each pair once: agent at index i vs all agents at index i+1..
-    # to avoid duplicating matchups. The first agent listed is the "challenger".
-    for i, agent_a in enumerate(agents):
-        for agent_b in agents[i + 1:]:
-            wins, draws, losses = run_matchup(agent_a, agent_b, args.num_games)
+    if args.az_only and args.checkpoint:
+        # Only run AlphaZero vs each opponent, skipping Minimax vs Minimax.
+        az_agent = agents[-1]
+        opponents = agents[:-1]
+        for opp in opponents:
+            wins, draws, losses = run_matchup(az_agent, opp, args.num_games)
             results.append(
                 {
-                    "agent_a": agent_a.name,
-                    "agent_b": agent_b.name,
+                    "agent_a": az_agent.name,
+                    "agent_b": opp.name,
                     "wins": wins,
                     "draws": draws,
                     "losses": losses,
                 }
             )
+    else:
+        # Round-robin: each pair plays once.
+        for i, agent_a in enumerate(agents):
+            for agent_b in agents[i + 1:]:
+                wins, draws, losses = run_matchup(agent_a, agent_b, args.num_games)
+                results.append(
+                    {
+                        "agent_a": agent_a.name,
+                        "agent_b": agent_b.name,
+                        "wins": wins,
+                        "draws": draws,
+                        "losses": losses,
+                    }
+                )
 
     _print_results(results)
 

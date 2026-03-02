@@ -50,7 +50,7 @@ _MODEL_PATH_SENTINEL: str = '_MODEL_PATH: str = "model.onnx"'
 _NUM_SIMS_SENTINEL: str = "_NUM_MCTS_SIMS: int = 200"
 
 # Sentinel in kaggle_agent_numpy.py
-_NUMPY_TIME_BUDGET_SENTINEL: str = "_TIME_BUDGET_SECS: float = 1.9  # sentinel"
+_NUMPY_TIME_BUDGET_SENTINEL: str = "_TIME_BUDGET_SECS: float = 2.0  # sentinel"
 
 
 def _parse_args() -> argparse.Namespace:
@@ -103,8 +103,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--time-budget",
         type=float,
-        default=1.9,
-        help="Time budget in seconds per move (default: 1.9; Kaggle allows 2s per move).",
+        default=2.0,
+        help="Time budget in seconds per move (default: 2.0; Kaggle allows 2s per move).",
     )
     parser.add_argument(
         "--dataset-path",
