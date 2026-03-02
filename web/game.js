@@ -49,13 +49,23 @@ let workerReady    = false;
 let loadedModelUrl = '';   // URL currently loaded in the worker
 
 // ── Canvas Setup ──────────────────────────────────────────────────────────────
+let canvasScale = 1;  // logical→CSS pixel ratio (< 1 on narrow screens)
+
 function setupCanvas() {
   const dpr = window.devicePixelRatio || 1;
-  canvas.width  = CANVAS_W * dpr;
-  canvas.height = CANVAS_H * dpr;
-  canvas.style.width  = CANVAS_W + 'px';
-  canvas.style.height = CANVAS_H + 'px';
-  ctx.scale(dpr, dpr);
+  // Scale down to fit the viewport with 32px of horizontal breathing room
+  const availableW = Math.min(window.innerWidth - 32, CANVAS_W);
+  canvasScale = availableW / CANVAS_W;
+  const logicalW = Math.round(CANVAS_W * canvasScale);
+  const logicalH = Math.round(CANVAS_H * canvasScale);
+
+  canvas.width  = logicalW * dpr;
+  canvas.height = logicalH * dpr;
+  canvas.style.width  = logicalW + 'px';
+  canvas.style.height = logicalH + 'px';
+
+  // Single transform: hi-dpi sharpness + responsive scale
+  ctx.setTransform(dpr * canvasScale, 0, 0, dpr * canvasScale, 0, 0);
 }
 
 // ── Coordinate Helpers ────────────────────────────────────────────────────────
@@ -73,9 +83,9 @@ function cellY(row) {
 /** Return the canvas Y just above the board (start of drop animation). */
 function aboveBoardY() { return PREVIEW_H / 2; }
 
-/** Given a canvas X coordinate, return the column index (-1 if outside). */
+/** Given a canvas X coordinate (CSS pixels) return the column index (-1 if outside). */
 function xToCol(x) {
-  const col = Math.floor((x - PAD) / CELL_SIZE);
+  const col = Math.floor((x / canvasScale - PAD) / CELL_SIZE);
   return col >= 0 && col < COLS ? col : -1;
 }
 
@@ -401,6 +411,8 @@ canvas.addEventListener('click', (e) => {
 
 newGameBtn.addEventListener('click', startNewGame);
 takeBackBtn.addEventListener('click', takeBack);
+
+window.addEventListener('resize', () => { setupCanvas(); draw(); });
 
 // ── Worker Bootstrap ──────────────────────────────────────────────────────────
 function initWorker() {
