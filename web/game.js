@@ -21,10 +21,12 @@ const COLOR_BG       = '#21262d';  // canvas background (outside board)
 // ── DOM Refs ─────────────────────────────────────────────────────────────────
 const canvas      = document.getElementById('gameCanvas');
 const ctx         = canvas.getContext('2d');
-const newGameBtn  = document.getElementById('newGameBtn');
-const statusDot   = document.getElementById('statusDot');
-const statusText  = document.getElementById('statusText');
-const diffSel     = document.getElementById('difficulty');
+const newGameBtn    = document.getElementById('newGameBtn');
+const takeBackBtn   = document.getElementById('takeBackBtn');
+const statusDot     = document.getElementById('statusDot');
+const statusText    = document.getElementById('statusText');
+const modelSizeSel  = document.getElementById('modelSize');
+const lookaheadSel  = document.getElementById('lookahead');
 
 // ── Game State ────────────────────────────────────────────────────────────────
 // board[row][col], row 0 = BOTTOM. 0=empty, 1=human(red), 2=AI(yellow)
@@ -37,10 +39,14 @@ let winCells     = null;  // array of {row,col} for winning 4 cells, or null
 let hoveredCol   = -1;
 let animating    = false;
 let animPiece    = null;  // { col, row, color, currentY, targetY, startY, startTime }
+let moveHistory  = [];    // [{col, row, mark}, ...] — one entry per placed piece
+let aiThinking   = false; // true while waiting for worker response
+let cancelAIMove = false; // flag to discard the next worker 'move' response
 
 // ── Worker ────────────────────────────────────────────────────────────────────
-let worker       = null;
-let workerReady  = false;
+let worker         = null;
+let workerReady    = false;
+let loadedModelUrl = '';   // URL currently loaded in the worker
 
 // ── Canvas Setup ──────────────────────────────────────────────────────────────
 function setupCanvas() {
@@ -192,6 +198,7 @@ function animFrame(now) {
     animating = false;
 
     board[row][col] = mark;
+    moveHistory.push({ col, row, mark });
     const wins = findWinCells(board, mark);
     if (wins) {
       winCells = wins;
@@ -270,17 +277,51 @@ function humanMove(col) {
 // ── AI Move ───────────────────────────────────────────────────────────────────
 function triggerAI() {
   if (!workerReady) return;
+  aiThinking = true;
   setStatus("AI is thinking...", 'loading');
   const flat = board.flat();  // 1D length 42, row 0 = BOTTOM
-  const numSims = parseInt(diffSel.value, 10);
+  const numSims = parseInt(lookaheadSel.value, 10);
   worker.postMessage({ type: 'getMove', board: flat, humanMark, numSims });
 }
 
 function aiMove(col) {
+  aiThinking = false;
   if (gameOver) return;
   const row = dropRow(board, col);
   if (row < 0) return;
   startAnimation(col, row, aiMark);
+}
+
+// ── Take Back ─────────────────────────────────────────────────────────────────
+function takeBack() {
+  if (animating) return;
+
+  // Require the human to have made at least one move
+  if (!moveHistory.some(m => m.mark === humanMark)) return;
+
+  if (aiThinking) {
+    // AI is computing — cancel it and undo the human's last move
+    cancelAIMove = true;
+    aiThinking   = false;
+    const { col, row } = moveHistory.pop();
+    board[row][col] = 0;
+  } else {
+    // Undo AI's last move if it's on top, then undo human's last move
+    if (moveHistory.length > 0 && moveHistory[moveHistory.length - 1].mark === aiMark) {
+      const { col, row } = moveHistory.pop();
+      board[row][col] = 0;
+    }
+    if (moveHistory.length > 0 && moveHistory[moveHistory.length - 1].mark === humanMark) {
+      const { col, row } = moveHistory.pop();
+      board[row][col] = 0;
+    }
+  }
+
+  gameOver      = false;
+  winCells      = null;
+  currentPlayer = humanMark;
+  setStatus("Your turn", 'human');
+  draw();
 }
 
 // ── Status Bar ────────────────────────────────────────────────────────────────
@@ -307,16 +348,24 @@ function startNewGame() {
   animating     = false;
   animPiece     = null;
   hoveredCol    = -1;
+  moveHistory   = [];
+  aiThinking    = false;
+  cancelAIMove  = false;
 
-  humanMark = document.getElementById('humanFirst').checked ? 1 : 2;
-  aiMark    = 3 - humanMark;
+  humanMark     = document.getElementById('humanFirst').checked ? 1 : 2;
+  aiMark        = 3 - humanMark;
   currentPlayer = 1;  // player 1 always goes first
 
   draw();
 
-  if (!workerReady) {
-    setStatus("Loading AI model...", 'loading');
-    return;
+  const selectedModel = modelSizeSel.value;
+  if (!workerReady || selectedModel !== loadedModelUrl) {
+    // Worker not ready or model changed — (re)load
+    workerReady    = false;
+    loadedModelUrl = selectedModel;
+    setStatus("Loading model...", 'loading');
+    worker.postMessage({ type: 'loadModel', modelUrl: selectedModel });
+    return;  // game starts when worker sends 'ready'
   }
 
   if (currentPlayer === humanMark) {
@@ -351,6 +400,7 @@ canvas.addEventListener('click', (e) => {
 });
 
 newGameBtn.addEventListener('click', startNewGame);
+takeBackBtn.addEventListener('click', takeBack);
 
 // ── Worker Bootstrap ──────────────────────────────────────────────────────────
 function initWorker() {
@@ -366,6 +416,7 @@ function initWorker() {
         }
         break;
       case 'move':
+        if (cancelAIMove) { cancelAIMove = false; aiThinking = false; break; }
         aiMove(e.data.col);
         break;
       case 'error':
@@ -376,7 +427,8 @@ function initWorker() {
   worker.onerror = (err) => {
     setStatus("Worker error: " + err.message, 'error');
   };
-  worker.postMessage({ type: 'init', modelUrl: 'model.onnx' });
+  loadedModelUrl = modelSizeSel.value;
+  worker.postMessage({ type: 'init', modelUrl: loadedModelUrl });
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

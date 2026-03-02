@@ -14,7 +14,11 @@ const C_PUCT  = 2.0;
 self.onmessage = async (e) => {
   try {
     if (e.data.type === 'init') {
-      await initModel(e.data.modelUrl);
+      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+      await loadModel(e.data.modelUrl);
+      self.postMessage({ type: 'ready' });
+    } else if (e.data.type === 'loadModel') {
+      await loadModel(e.data.modelUrl);
       self.postMessage({ type: 'ready' });
     } else if (e.data.type === 'getMove') {
       const col = await getMove(e.data);
@@ -25,8 +29,7 @@ self.onmessage = async (e) => {
   }
 };
 
-async function initModel(modelUrl) {
-  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+async function loadModel(modelUrl) {
   session = await ort.InferenceSession.create(modelUrl, {
     executionProviders: ['wasm'],
   });

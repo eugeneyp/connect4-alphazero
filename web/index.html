@@ -12,35 +12,43 @@
     <p id="subtitle">Play against an AI that trained itself with tens of thousands of games in the style of AlphaZero reinforcement learning.</p>
 
     <div id="controls">
-      <button id="newGameBtn">New Game</button>
+      <div class="control-row">
+        <label class="select-label" for="modelSize">Model:</label>
+        <select id="modelSize">
+          <option value="models/tiny.onnx">Tiny</option>
+          <option value="models/medium.onnx" selected>Medium</option>
+          <option value="models/large.onnx">Large</option>
+        </select>
+        <label class="select-label" for="lookahead">Lookahead:</label>
+        <select id="lookahead">
+          <option value="0">Instant (0 sims)</option>
+          <option value="50">Quick (50 sims)</option>
+          <option value="100">Normal (100 sims)</option>
+          <option value="200" selected>Strong (200 sims)</option>
+          <option value="400">Max (400 sims)</option>
+        </select>
+      </div>
 
-      <div class="control-group">
-        <label>
+      <div class="control-row">
+        <label class="radio-label">
           <input type="radio" name="whoFirst" id="humanFirst" value="human" checked />
           You play first
         </label>
-        <label>
+        <label class="radio-label">
           <input type="radio" name="whoFirst" id="aiFirst" value="ai" />
           AI plays first
         </label>
       </div>
 
-      <div class="control-group">
-        <label for="difficulty">Difficulty:</label>
-        <select id="difficulty">
-          <option value="0">No simulations (fastest)</option>
-          <option value="50">50 simulations (easy)</option>
-          <option value="100">100 simulations (medium)</option>
-          <option value="200" selected>200 simulations (hard)</option>
-          <option value="400">400 simulations (hardest)</option>
-        </select>
-      </div>
+      <button id="newGameBtn">New Game</button>
     </div>
 
     <div id="statusBar">
       <span id="statusDot" class="dot dot-idle"></span>
       <span id="statusText">Loading AI model...</span>
     </div>
+
+    <button id="takeBackBtn">Take Back</button>
 
     <div id="canvasWrapper">
       <canvas id="gameCanvas"></canvas>
@@ -52,7 +60,11 @@
     </div>
 
     <footer>
-      Built by Eugene Peng (<a href="https://github.com/eugeneyp/connect4-alphazero" target="_blank" rel="noopener">GitHub</a>)
+      Built by Eugene Peng (<a href="https://github.com/eugeneyp/connect4-alphazero" target="_blank" rel="noopener">GitHub</a>)<br>
+      Model Sizes<br>
+      Tiny = 2 ResBlocks, 32 Filters<br>
+      Medium = 4 ResBlocks, 64 Filters<br>
+      Large = 5 ResBlocks, 128 Filters
     </footer>
   </div>
 
