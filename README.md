@@ -1,6 +1,6 @@
 # Connect 4 — AlphaZero
 
-An AlphaZero-style Connect 4 agent trained entirely from self-play — no human game data, no hand-crafted heuristics. Combines Monte Carlo Tree Search (MCTS) with a dual-headed residual neural network. The large model (5 ResBlocks, 128 filters) achieves 100% win rate against Minimax depth-5 by iteration 9 of 20.
+An AlphaZero-style Connect 4 agent trained entirely from self-play — no human game data, no hand-crafted heuristics. Combines Monte Carlo Tree Search (MCTS) with a dual-headed residual neural network. The large model (5 ResBlocks, 128 filters) **placed top 10 on the Kaggle Connect X leaderboard** and beats Minimax depth-9 at 100% — using only ~50 MCTS simulations per move within Kaggle's 2-second time limit.
 
 **[Play it live in your browser →](https://eugeneyp.github.io/connect4-alphazero/)**
 
@@ -62,7 +62,7 @@ The board is always encoded from the current player's perspective, so the networ
 - **MCTS simulations per move:** 400
 - **Training time:** ~48 hours
 
-**Benchmark results (best model, 400 MCTS sims):**
+**Benchmark results (best model, 400 MCTS sims, 20 games each):**
 
 | Opponent | Win rate |
 |----------|----------|
@@ -72,6 +72,10 @@ The board is always encoded from the current player's perspective, so the networ
 | Minimax depth 5 | 100% |
 | Minimax depth 7 | 100% |
 | Minimax depth 9 | 100% |
+
+**Kaggle Connect X leaderboard: top 10**
+
+The submitted agent runs the same model with ~50 MCTS simulations per move, constrained by Kaggle's 2-second per-move time limit. Despite using 8× fewer simulations than the benchmarks above, it placed in the top 10 on the Connect X leaderboard.
 
 ### Medium model (4 ResBlocks, 64 filters)
 
