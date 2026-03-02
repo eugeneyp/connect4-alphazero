@@ -62,7 +62,7 @@ The board is always encoded from the current player's perspective, so the networ
 - **MCTS simulations per move:** 400
 - **Training time:** ~48 hours
 
-**Benchmark results (best model, 400 MCTS sims, 30 games):**
+**Benchmark results (best model, 400 MCTS sims):**
 
 | Opponent | Win rate |
 |----------|----------|
@@ -70,8 +70,8 @@ The board is always encoded from the current player's perspective, so the networ
 | Minimax depth 1 | 100% |
 | Minimax depth 3 | 100% |
 | Minimax depth 5 | 100% |
-| Minimax depth 7 | TBD |
-| Minimax depth 9 | TBD |
+| Minimax depth 7 | 100% |
+| Minimax depth 9 | 100% |
 
 ### Medium model (4 ResBlocks, 64 filters)
 
