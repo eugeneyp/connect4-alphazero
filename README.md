@@ -72,6 +72,7 @@ The board is always encoded from the current player's perspective, so the networ
 | Minimax depth 5 | 100% |
 | Minimax depth 7 | 100% |
 | Minimax depth 9 | 100% |
+| Minimax depth 11 | 100% |
 
 **Kaggle Connect X leaderboard: top 10**
 
