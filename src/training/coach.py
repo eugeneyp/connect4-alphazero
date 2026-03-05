@@ -17,7 +17,6 @@ from pathlib import Path
 import torch
 
 from src.agents.minimax_agent import MinimaxAgent
-from src.agents.random_agent import RandomAgent
 from src.game.board import Connect4Board
 from src.game.constants import PLAYER_1, PLAYER_2
 from src.mcts.search import MCTS, select_move
@@ -200,10 +199,8 @@ class Coach:
         half = num_games // 2
 
         opponents = [
-            ("Random", RandomAgent()),
-            ("Minimax(d=1)", MinimaxAgent(max_depth=1)),
-            ("Minimax(d=3)", MinimaxAgent(max_depth=3)),
-            ("Minimax(d=5)", MinimaxAgent(max_depth=5)),
+            ("Minimax(d=7)", MinimaxAgent(max_depth=7)),
+            ("Minimax(d=9)", MinimaxAgent(max_depth=9)),
         ]
 
         for opp_name, opp in opponents:
